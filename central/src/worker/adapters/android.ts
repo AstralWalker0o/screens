@@ -322,6 +322,9 @@ export const android: Adapter = {
         const url = await signAgentUrl(ctx.env.SIGNING_SECRET, ctx.origin, 'GET', apk.r2_key, 30 * 60_000);
         const inst = await ctx.gw('adb.install', { serial: serialOf(ctx), url, sha256: apk.sha256, flags: ['-r'] }, 600_000);
         if (!/Success/i.test(inst.output ?? '')) return { ok: false, detail: `Install failed: ${String(inst.output ?? '').slice(-300)}` };
+        // A freshly installed app is "stopped" and ignores broadcasts until launched once.
+        await sh(ctx, `am start -n ${LAUNCHER_PKG}/.LauncherActivity`).catch(() => undefined);
+        await sleep(1500);
         const cfg = await launcherConfigure(ctx, String(args.config_b64 ?? ''));
         await sh(ctx, `cmd package set-home-activity ${LAUNCHER_PKG}/.LauncherActivity 2>&1`).catch(() => undefined);
         if (args.force_home) await sh(ctx, STOCK_LAUNCHERS.map((p) => `pm disable-user --user 0 ${p} 2>/dev/null`).join('; ')).catch(() => undefined);
@@ -376,14 +379,14 @@ export function parseBroadcast(out: string): { result: number | null; data: stri
 
 async function launcherConfigure(ctx: AdapterCtx, configB64: string) {
   if (!/^[A-Za-z0-9+/=]+$/.test(configB64) || configB64.length > 90_000) throw new AdapterError('bad_args', 'Invalid launcher config');
-  const r = await sh(ctx, `am broadcast -a ${LAUNCHER_PKG}.CONFIG -n ${LAUNCHER_PKG}/.ConfigReceiver --es config_b64 ${configB64}`);
+  const r = await sh(ctx, `am broadcast --include-stopped-packages -a ${LAUNCHER_PKG}.CONFIG -n ${LAUNCHER_PKG}/.ConfigReceiver --es config_b64 ${configB64}`);
   const b = parseBroadcast(r.stdout);
   if (b.result === 1 && b.data?.startsWith('ok:')) return { ok: true, sha: b.data.slice(3) };
   return { ok: false, detail: b.data ?? (r.stdout.trim().slice(-200) || 'No answer from the Screens Launcher (is it installed?)') };
 }
 
 async function launcherStatus(ctx: AdapterCtx) {
-  const r = await sh(ctx, `am broadcast -a ${LAUNCHER_PKG}.STATUS -n ${LAUNCHER_PKG}/.ConfigReceiver`);
+  const r = await sh(ctx, `am broadcast --include-stopped-packages -a ${LAUNCHER_PKG}.STATUS -n ${LAUNCHER_PKG}/.ConfigReceiver`);
   const b = parseBroadcast(r.stdout);
   if (b.result === 1 && b.data?.startsWith('status:')) {
     const st = parseJson<any>(b.data.slice(7), {});

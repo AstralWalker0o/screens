@@ -170,3 +170,12 @@ android/
 Dependencies: AndroidX (core-ktx, activity-compose, lifecycle-runtime-compose, Compose UI and
 foundation, `androidx.tv:tv-material`) plus `com.google.zxing:core` for the QR code. JUnit is used
 for tests only.
+
+## Release builds for Screens (permanent signing key)
+
+Use `tools/build-launcher.sh` rather than calling Gradle directly. It fetches the permanent signing key from the
+private R2 bucket (`screens-store/signing/`), so every build is signed with the same certificate and Android accepts
+it as an update over an installed copy. The first run creates that key. Then publish it into the central APK
+library with `tools/release-launcher.sh`, which the dashboard's "Install Screens Launcher" action uses.
+
+Current signing certificate SHA-256: `350c93a0498dad2bb1e3d8501ab55e46fa6f082559f20f595490ae26d190cda9`
