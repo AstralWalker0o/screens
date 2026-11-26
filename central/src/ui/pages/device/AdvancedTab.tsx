@@ -2,6 +2,7 @@ import { useEffect, useRef, useState, type KeyboardEvent } from 'react';
 import { useNavigate } from 'react-router';
 import { SquareTerminal, Save, Info, Link2, RefreshCw, RotateCw, Trash2, Eraser, Wrench, House, KeyRound } from 'lucide-react';
 import { LauncherActions, LauncherStatusText } from '../../components/Launcher';
+import { DeviceLayoutPicker } from '../../components/launcher/Rollout';
 import type { Device } from '../../../shared/types';
 import { api } from '../../api';
 import { act, setQueryData } from '../../lib/query';
@@ -22,10 +23,11 @@ export function AdvancedTab({ device: d }: { device: Device }) {
       <div className="space-y-4">
         {d.capabilities.includes('launcher') && (
           <Card>
-            <CardHeader title="Screens Launcher" icon={House} subtitle="Optional home screen with the guest welcome screen and kiosk mode. Its settings live on the site’s Guest tab." />
+            <CardHeader title="Screens Launcher" icon={House} subtitle="Optional home screen with the guest welcome screen and kiosk mode. Design it on the site’s Home screen tab; welcome and kiosk live on the Guest tab." />
             <CardBody>
               <LauncherStatusText device={d} />
               <div className="mt-2"><LauncherActions device={d} /></div>
+              <DeviceLayoutPicker device={d} />
             </CardBody>
           </Card>
         )}

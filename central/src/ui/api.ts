@@ -9,6 +9,7 @@ import type {
   SiteDetail, SiteKind, SiteSummary, DeviceKind, BulkCommandRequest, BulkCommandResult, SiteSettings, GuestSettings, VersionInfo,
 } from '../shared/types';
 import type { SonosSiteOverview } from '../shared/sonos';
+import type { LauncherAsset, LauncherHome, LauncherLayout, LauncherSiteState } from '../shared/launcher';
 
 export class ApiError extends Error {
   status: number;
@@ -116,6 +117,14 @@ export type GuestResetResult = { results: { device_id: string; ok: boolean; deta
 /** One row of GET /api/sites/:id/apps — the union of apps on a site's devices. */
 export interface SiteApp { package: string; label: string | null; system: boolean; category: string | null; risk: string | null; devices: number; kinds: DeviceKind[] }
 export type DnsLogQuery = { device_id?: string; q?: string; action?: string; limit?: number; before?: number };
+export type LauncherPushResult = { results: { device_id: string; ok: boolean; detail?: string }[] };
+export type UploadedAsset = LauncherAsset & { url: string };
+
+/** Mock mode serves uploaded/demo images as object or data URLs (an <img> can't go through the mock router). */
+const mockAssetUrls = new Map<string, string>();
+export function registerMockAsset(sha256: string, url: string) {
+  mockAssetUrls.set(sha256, url);
+}
 
 export const api = {
   me: () => get<Me>('/api/me'),
@@ -202,6 +211,28 @@ export const api = {
       return request<Apk>('POST', '/api/apks', fd);
     },
     remove: (id: string) => del<Ok>(`/api/apks/${enc(id)}`),
+  },
+
+  /** Screens Launcher v2 home-screen layouts, pictures and rollout (docs/LAUNCHER-V2.md). */
+  launcher: {
+    layouts: (site_id?: string) => get<LauncherLayout[]>(`/api/launcher/layouts${qs({ site_id })}`),
+    templates: () => get<LauncherLayout[]>('/api/launcher/layouts?templates=1'),
+    create: (b: { site_id: string | null; name: string; home?: LauncherHome; accent?: string | null; from_id?: string; make_default?: boolean }) =>
+      post<LauncherLayout>('/api/launcher/layouts', b),
+    update: (id: string, b: { name?: string; home?: LauncherHome; accent?: string | null }) => put<LauncherLayout>(`/api/launcher/layouts/${enc(id)}`, b),
+    remove: (id: string) => del<Ok>(`/api/launcher/layouts/${enc(id)}`),
+    /** Copy to another site, or `site_id: null` for a fleet template. */
+    copy: (id: string, b: { site_id: string | null; name?: string; make_default?: boolean }) => post<LauncherLayout>(`/api/launcher/layouts/${enc(id)}/copy`, b),
+    site: (siteId: string) => get<LauncherSiteState>(`/api/sites/${enc(siteId)}/launcher`),
+    setSiteLayout: (siteId: string, layout_id: string | null) => put<Ok & { layout_id: string | null }>(`/api/sites/${enc(siteId)}/launcher`, { layout_id }),
+    push: (siteId: string, device_ids?: string[]) => post<LauncherPushResult>(`/api/sites/${enc(siteId)}/launcher/push`, device_ids ? { device_ids } : {}),
+    setDeviceLayout: (deviceId: string, layout_id: string | null) => put<Ok & { layout_id: string | null }>(`/api/devices/${enc(deviceId)}/launcher`, { layout_id }),
+    uploadAsset: (file: Blob, name = 'picture') => {
+      const fd = new FormData();
+      fd.set('file', file, name);
+      return request<UploadedAsset>('POST', '/api/launcher/assets', fd);
+    },
+    assetUrl: (sha256: string, ext: string) => (MOCK ? mockAssetUrls.get(sha256) ?? '' : `/api/launcher/assets/${sha256}.${ext}`),
   },
 
   appPolicies: {
