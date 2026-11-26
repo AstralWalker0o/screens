@@ -1,5 +1,5 @@
 import { useParams } from 'react-router';
-import { TvMinimalPlay, Router, Radar, Globe, Share2, BedDouble, Settings2, Building2, MapPin, Clock } from 'lucide-react';
+import { TvMinimalPlay, Router, Radar, Globe, Share2, BedDouble, Settings2, Building2, MapPin, Clock, Speaker } from 'lucide-react';
 import { api } from '../../api';
 import { useQuery } from '../../lib/query';
 import { SITE_KIND } from '../../lib/labels';
@@ -14,6 +14,7 @@ import { SiteDns } from './SiteDns';
 import { MdnsTab } from './MdnsTab';
 import { GuestTab } from './GuestTab';
 import { SiteSettingsTab } from './SiteSettingsTab';
+import { SiteSonos } from './SiteSonos';
 
 export default function SiteDetail() {
   const { id = '', tab = 'devices' } = useParams();
@@ -24,6 +25,7 @@ export default function SiteDetail() {
 
   const tabs: TabDef[] = [
     { id: 'devices', label: 'Devices', icon: TvMinimalPlay, count: s?.devices.length },
+    { id: 'sonos', label: 'Sonos', icon: Speaker, hidden: !s?.devices.some((d) => d.kind === 'sonos') },
     { id: 'gateway', label: 'Gateway', icon: Router },
     { id: 'discover', label: 'Discover', icon: Radar },
     { id: 'dns', label: 'DNS', icon: Globe },
@@ -53,6 +55,8 @@ export default function SiteDetail() {
       <TabNav tabs={tabs} base={`/sites/${id}`} active={tab} />
       {!s ? (
         <SkeletonRows rows={6} />
+      ) : tab === 'sonos' && s.devices.some((d) => d.kind === 'sonos') ? (
+        <SiteSonos site={s} />
       ) : tab === 'gateway' ? (
         <GatewayTab site={s} />
       ) : tab === 'discover' ? (
