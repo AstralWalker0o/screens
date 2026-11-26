@@ -315,3 +315,10 @@ export type LiveEvent =
   | { type: 'alert'; alert: Alert };
 
 export interface Paged<T> { items: T[]; next?: string | null }
+
+/** GET /api/version: what's deployed and whether the fleet is up to date. */
+export interface VersionInfo {
+  version: string; build_sha: string; built_at: string | null;
+  gateway: { latest: string | null; up_to_date: number; total: number; sites: { site_id: string; site_name: string; version: string | null; status: string; up_to_date: boolean }[] };
+  launcher: { latest: string | null; installed: number; up_to_date: number };
+}

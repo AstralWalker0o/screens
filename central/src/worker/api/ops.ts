@@ -1,5 +1,7 @@
 import { Hono } from 'hono';
-import type { AppPolicy, AppSettings, Automation } from '../../shared/types';
+import type { AppPolicy, AppSettings, Automation, VersionInfo } from '../../shared/types';
+import { APP_VERSION } from '../../shared/releases';
+import { BUILD_SHA, BUILD_TIME } from '../../shared/build';
 import { parseCron } from '../automations/cron';
 import { parseApk } from '../lib/apk';
 import { sealJson, sha256Hex } from '../lib/crypto';
@@ -210,4 +212,23 @@ opsRoutes.put('/settings', async (c) => {
   if (b.dns_log_retention_days !== undefined) await setAppSetting(c.env, 'dns_log_retention_days', Math.min(30, Math.max(1, Number(b.dns_log_retention_days) || 7)));
   await audit(c.env, actorOf(c), 'settings.update', { details: { ...b, cf_dns_token: b.cf_dns_token === undefined ? undefined : '[redacted]' } });
   return c.json(await getAppSettings(c.env));
+});
+
+// ---------------------------------------------------------------- version / release notes
+opsRoutes.get('/version', async (c) => {
+  const [rel, gws, launcher, devs] = await Promise.all([
+    c.env.DB.prepare('SELECT version FROM agent_releases ORDER BY created_at DESC LIMIT 1').first<Row>(),
+    c.env.DB.prepare("SELECT g.site_id, s.name site_name, g.version, g.status FROM gateways g JOIN sites s ON s.id = g.site_id WHERE g.status != 'revoked' ORDER BY s.name").all<Row>(),
+    c.env.DB.prepare("SELECT version_name FROM apks WHERE package = 'au.supercluster.screens.launcher' ORDER BY coalesce(version_code, 0) DESC, uploaded_at DESC LIMIT 1").first<Row>(),
+    c.env.DB.prepare("SELECT json_extract(facts, '$.launcher.version') v FROM devices WHERE kind = 'android' AND json_extract(facts, '$.launcher.installed') = 1").all<Row>(),
+  ]);
+  const latest = rel?.version ?? null;
+  const sites = gws.results.map((g) => ({ site_id: g.site_id, site_name: g.site_name, version: g.version, status: g.status, up_to_date: !latest || g.version === latest }));
+  const lv = launcher?.version_name ?? null;
+  const out: VersionInfo = {
+    version: APP_VERSION, build_sha: BUILD_SHA, built_at: BUILD_TIME,
+    gateway: { latest, up_to_date: sites.filter((s) => s.up_to_date).length, total: sites.length, sites },
+    launcher: { latest: lv, installed: devs.results.length, up_to_date: devs.results.filter((d) => !lv || d.v === lv).length },
+  };
+  return c.json(out);
 });

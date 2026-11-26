@@ -7,6 +7,7 @@ Errors are `{ "error": "code", "message": "human text" }` with a 4xx/5xx status.
 | Method | Path | Body | Returns |
 |---|---|---|---|
 | GET | `/api/me` | | `Me` |
+| GET | `/api/version` | | `VersionInfo`: app version + build, latest gateway/launcher versions and how many are up to date. Release notes are bundled in `src/shared/releases.ts`. |
 | GET | `/api/overview` | | `Overview` |
 | GET | `/api/clients` | | `Client[]` |
 | POST | `/api/clients` | `{name, contact?, notes?}` | `Client` |
