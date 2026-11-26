@@ -113,13 +113,14 @@ and reconnects.
   "config": {
     "dns": { "...": "see dns.configure args" },
     "mdns": { "...": "see mdns.configure args" },
+    "net": { "...": "see net.configure args (only sent when the agent has cap netcfg)" },
     "telemetry": { "dns_batch_ms": 5000, "metrics_ms": 60000, "neighbors_ms": 300000 }
   }
 }
 ```
 
-The agent applies `config.dns` and `config.mdns` exactly as if it had received
-`dns.configure` / `mdns.configure`. It persists the last applied config to
+The agent applies `config.net` (first), `config.dns` and `config.mdns` exactly as
+if it had received `net.configure` / `dns.configure` / `mdns.configure`. It persists the last applied config to
 `$DATA/config.json`, so DNS and mDNS keep working with no link (the site must
 stay usable if the internet or Cloudflare is down).
 
@@ -337,6 +338,39 @@ down:
 
 Event **`mdns.services`** every 60 s **when the list changed**: `{services: [ ...same as above... ]}`.
 
+### Network legs (cap `netcfg`, gateway ≥ 0.3.0)
+
+The dashboard can give the gateway an address on more VLANs without touching
+the router or the host's own network config. A *leg* is either a VLAN
+sub-interface on a trunked port (`kind: "vlan"`, created as `scr<vlan>`) or a
+port the host left unconfigured (`kind: "existing"`, e.g. a second Proxmox
+NIC). Addressing is DHCP (address and prefix only: no routes, no DNS servers,
+no hostname changes) or a static private CIDR.
+
+`net.configure` args (also `welcome.config.net`; persisted to `config.json`):
+
+```json
+{ "interfaces": [
+  { "kind": "vlan", "parent": "eth0", "vlan": 50, "mode": "dhcp" },
+  { "kind": "existing", "name": "ens19", "mode": "static", "address": "10.10.60.5/24" }
+] }
+```
+
+The agent reconciles to exactly this list. It creates and raises missing
+legs, removes legs that are no longer listed (and stray `scr*` links), and
+refuses an `existing` port that already has addresses from the host. DHCP
+legs renew at half the lease time; each address is installed with a lifetime
+of lease + 30 s, so a dead gateway never squats on an address. Validation:
+VLAN 1–4094, interface names `[A-Za-z0-9._-]{1,15}`, never lo, docker, br-,
+veth, cni, flannel, tailscale, wg, tun, tap, virbr or zt; at most 32 legs.
+
+Result (also `net.status`): `{interfaces: [{name, kind, parent?, vlan?, mode, state: "up"|"acquiring"|"error", addrs, error?, lease_at?, expires?}], errors: [string], host: [hello-style interface list]}`.
+
+Whenever a leg's addresses change, the agent re-binds DNS/DoT/mDNS listeners
+(so `0.0.0.0:53` expands to the new address) and sends event **`net.status`**
+with the same shape. The hub stores it, refreshes the gateway's interface list
+and re-reads the DNS listener state.
+
 ### Telemetry events
 
 | `evt.type` | interval | data |
@@ -346,6 +380,7 @@ Event **`mdns.services`** every 60 s **when the list changed**: `{services: [ ..
 | `log` | as they happen (warn+) | `{level, msg, ts}` |
 | `dns.queries` | see DNS | |
 | `mdns.services` | see mDNS | |
+| `net.status` | when leg addresses change | see Network legs |
 
 ## 6. Hub-side responsibilities (for reference)
 

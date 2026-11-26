@@ -58,7 +58,8 @@ Android TV / Google TV devices) and Sonos speakers, across many sites.
 | Gateway revocation | "Revoke" in the dashboard immediately disconnects the gateway and rejects its key. |
 | File transfer | Short-lived HMAC-signed URLs for policies, APKs, screenshots and updates. Gateway binaries are verified by SHA-256 before install. |
 | Relay safety | The gateway refuses to relay to anything except private LAN addresses (never loopback or the internet), so it can't be turned into a proxy. |
-| Device secrets | Samsung tokens and LG client keys are encrypted at rest (AES-GCM) in D1. The ADB key stays on the gateway. DoT private keys never leave the gateway (the cloud only sees the CSR). |
+| Configured secrets | Anything an operator provides lives only as a **Cloudflare Worker secret**: `SIGNING_SECRET` (signed URLs), `SECRETS_KEY` (encryption key below) and `CF_DNS_TOKEN` (Cloudflare "Edit zone DNS" token for DoT hostnames and certificates). The dashboard can see whether they are set, never their values. |
+| Runtime secrets | Secrets that devices or services issue at runtime can't be Worker secrets, because a Worker can't write its own secrets. These are the Samsung pairing tokens, LG client keys and the Let's Encrypt account key. They are encrypted at rest (AES-GCM, with `SECRETS_KEY`) in D1. The ADB key and each gateway's Ed25519 identity key stay on the gateway. DoT private keys never leave the gateway; the cloud only sees the CSR. Enrollment codes and the kiosk exit PIN are stored only as hashes. |
 | Audit | Every non-trivial action (install, uninstall, guest reset, rule change, enrollment…) goes into the audit log with the actor. |
 
 ## Data

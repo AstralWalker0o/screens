@@ -262,3 +262,44 @@ describe('scrcpy mirroring', () => {
     expect(() => serverCommand('0a1b; reboot', mirrorOptions(new URLSearchParams()))).toThrow();
   });
 });
+
+describe('network legs', () => {
+  it('accepts VLAN and spare-port legs and normalises them', async () => {
+    const { sanitizeNetConfig } = await import('../src/worker/lib/netcfg');
+    const cfg = sanitizeNetConfig({ interfaces: [
+      { kind: 'vlan', parent: 'eth0', vlan: '50', mode: 'dhcp', label: '  IoT  ' },
+      { kind: 'existing', name: 'ens19', mode: 'static', address: '10.10.60.5/24', extra: 'ignored' },
+    ] });
+    expect(cfg.interfaces).toEqual([
+      { kind: 'vlan', parent: 'eth0', vlan: 50, mode: 'dhcp', label: 'IoT' },
+      { kind: 'existing', name: 'ens19', mode: 'static', address: '10.10.60.5/24' },
+    ]);
+  });
+  it('rejects bad input', async () => {
+    const { sanitizeNetConfig } = await import('../src/worker/lib/netcfg');
+    const bad = [
+      { interfaces: [{ kind: 'vlan', parent: 'eth0', vlan: 4095, mode: 'dhcp' }] },
+      { interfaces: [{ kind: 'vlan', parent: 'docker0', vlan: 5, mode: 'dhcp' }] },
+      { interfaces: [{ kind: 'existing', name: 'scr50', mode: 'dhcp' }] },
+      { interfaces: [{ kind: 'existing', name: 'ens19', mode: 'static', address: '8.8.8.8/24' }] },
+      { interfaces: [{ kind: 'existing', name: 'ens19', mode: 'static', address: '10.0.0.1/31' }] },
+      { interfaces: [{ kind: 'vlan', parent: 'eth0', vlan: 50, mode: 'dhcp' }, { kind: 'vlan', parent: 'eth1', vlan: 50, mode: 'dhcp' }] },
+      { interfaces: [{ kind: 'bridge', name: 'x', mode: 'dhcp' }] },
+      { nope: true },
+    ];
+    for (const b of bad) expect(() => sanitizeNetConfig(b)).toThrow();
+  });
+});
+
+describe('Samsung cross-VLAN pairing hint', () => {
+  it('detects a TV outside every gateway subnet', async () => {
+    const { ipInCidr } = await import('../src/worker/lib/util');
+    const { samsungVlanHelp } = await import('../src/worker/adapters/samsung');
+    expect(ipInCidr('10.10.50.192', '10.10.50.1/24')).toBe(true);
+    expect(ipInCidr('10.10.50.192', '10.10.100.237/24')).toBe(false);
+    expect(ipInCidr('10.10.51.1', '10.10.50.0/23')).toBe(true);
+    expect(samsungVlanHelp('10.10.50.192', ['10.10.100.237/24'])).toMatch(/different network \(VLAN\).*10\.10\.50\.x/);
+    expect(samsungVlanHelp('10.10.50.192', ['10.10.100.237/24', '10.10.50.23/24'])).toBeNull();
+    expect(samsungVlanHelp('10.10.50.192', [])).toBeNull();
+  });
+});

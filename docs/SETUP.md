@@ -12,18 +12,31 @@ You need a small Linux VM (or a mini PC) that stays on at the site.
 | OS | Ubuntu 22.04+/Debian 12 (any Linux with Docker works) |
 | CPU / RAM / disk | 1 vCPU, 512 MB RAM, 2 GB disk |
 | Software | Docker Engine with the Compose plugin (`curl -fsSL https://get.docker.com \| sh`) |
-| Network | **A leg on every VLAN that should be covered.** At minimum the IoT/media VLAN where the TVs, Shields and Sonos live. Add the main VLAN too if you want the mDNS reflector to let phones find the Sonos speakers. |
+| Network | **A leg on every VLAN that should be covered** (add them later from the dashboard). At minimum the IoT/media VLAN where the TVs, Shields and Sonos live. Add the main VLAN too if you want the mDNS reflector to let phones find the Sonos speakers. |
 
-Giving the VM more than one VLAN:
+Giving the gateway more than one VLAN: install it with one network first. Then
+add the other VLANs from the dashboard: **Site → Gateway → Network
+interfaces → Add network**. Nothing on the router changes. The gateway only
+takes an address on each VLAN (DHCP or fixed), with no routes or DNS changes.
 
-- **Proxmox:** add a second network device to the VM with the other VLAN tag
-  (e.g. `net0` untagged/main, `net1` tag 20 for IoT). Inside the VM it shows
-  up as a second interface (`ens19`), and DHCP is fine.
-- **One trunked NIC:** create VLAN sub-interfaces in the VM (netplan `vlans:`),
-  e.g. `ens18.20`.
+- **Proxmox, simplest:** add a network device to the VM with the VLAN tag
+  (e.g. `net1`, tag 50). Within a minute it shows up in the dashboard as a spare
+  port (e.g. `ens19`). Choose **Its own network port** → DHCP.
+- **Trunked port:** if the VM's port receives the VLANs *tagged* (Proxmox
+  device with no VLAN tag on a VLAN-aware bridge, or a switch trunk to a mini
+  PC), choose **Tagged on a port** and enter the VLAN ID. A Proxmox device that
+  *has* a VLAN tag only receives that one VLAN, so use a second device instead.
+- Minimal VMs may need VLAN support loaded once for tagged VLANs:
+  `sudo modprobe 8021q && echo 8021q | sudo tee -a /etc/modules`. The
+  dashboard tells you if this is needed.
 
-Give the VM a **DHCP reservation (fixed IP) on the IoT VLAN**, because the
-TVs will use that address as their DNS server.
+**Samsung TVs need this.** They only show the "Allow" prompt to devices on
+their own network, so the gateway needs a leg on the TVs' VLAN to pair with
+them. Discovery, the DNS filter and the mDNS reflector use the new legs
+automatically.
+
+Give the gateway a **DHCP reservation (fixed IP) on the IoT VLAN**, because
+the TVs will use that address as their DNS server.
 
 ## 2. Install the gateway
 
@@ -45,7 +58,7 @@ and Sonos speakers on the gateway's subnets.
 | Device | Before adopting | When you adopt |
 |---|---|---|
 | **NVIDIA Shield / Android TV** | Settings → Device Preferences → About → click *Build* 7 times. Then Developer options → enable **Network debugging** (on newer Google TV, **Wireless debugging**). | The TV shows **"Allow network debugging?"**. Tick *Always allow from this computer* and press **Allow** with the remote. |
-| **Samsung TV** | Settings → All Settings → **Connection** → External Device Manager → **Device Connection Manager** → **Access Notification** → *First Time Only* (older TVs: Settings → General → External Device Manager). Also: Connection → Network → Expert Settings → **Power On with Mobile** → On, so Screens can switch it on. | The TV shows **"Allow Screens to connect?" → Allow** (answer within ~30 s). If it refused before, delete or allow "Screens" in Device Connection Manager → Device List. |
+| **Samsung TV** | The gateway must have a leg on the TV's VLAN (see §1). Settings → All Settings → **Connection** → External Device Manager → **Device Connection Manager** → **Access Notification** → *First Time Only* (older TVs: Settings → General → External Device Manager). Also: Connection → Network → Expert Settings → **Power On with Mobile** → On, so Screens can switch it on. | The TV shows **"Allow Screens to connect?" → Allow** (answer within ~30 s). If it refused before, delete or allow "Screens" in Device Connection Manager → Device List. |
 | **LG TV** (beta) | Settings → General → Devices → *Mobile TV On* → **Turn on via Wi-Fi**. | The TV shows a pairing prompt. Choose **Accept**. |
 | **Sonos** | Nothing. | Nothing. Sonos needs no pairing on the local network. |
 
@@ -57,7 +70,9 @@ each device is changed instead.
 - **Android TV / Shield:** on the device's **Privacy** tab, switch on
   **Private DNS**. It uses encrypted DNS-over-TLS to the gateway, at
   `<site>.dns.screens.supercluster.au`. Enable *Private DNS* in the site's
-  Settings tab first, which issues a certificate for the site. Screens checks
+  Settings tab first, which issues a certificate for the site. (One-time,
+  for the whole app: the Cloudflare DNS token must be added as the Worker
+  secret `CF_DNS_TOKEN`. The Settings page shows the exact steps.) Screens checks
   the device still has internet afterwards and switches back automatically if
   not.
 - **Samsung:** Settings → General → Network → Network Status → IP Settings →

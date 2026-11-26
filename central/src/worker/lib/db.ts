@@ -1,5 +1,5 @@
 import type {
-  Alert, AppSettings, Automation, Device, DeviceCapability, DeviceKind, Discovered, Gateway, Job, MdnsConfig,
+  Alert, AppSettings, Automation, Device, DeviceCapability, DeviceKind, Discovered, Gateway, Job, MdnsConfig, NetConfig,
   SiteSettings,
 } from '../../shared/types';
 import type { Env } from '../env';
@@ -69,6 +69,11 @@ export function siteSettings(row: Row): SiteSettings {
 /** Raw stored kiosk PIN hash (never sent to the dashboard). */
 export function kioskPinHash(row: Row): string | null {
   return parseJson<any>(row.settings, {}).guest?.kiosk?.pin_sha256 ?? null;
+}
+
+export function siteNetwork(row: Row): NetConfig {
+  const n = parseJson<Partial<NetConfig>>(row.network, {});
+  return { interfaces: Array.isArray(n.interfaces) ? n.interfaces : [] };
 }
 
 export function siteMdns(row: Row): MdnsConfig {
@@ -183,11 +188,11 @@ export async function getAppSettings(env: Env): Promise<AppSettings> {
   const rows = await env.DB.prepare('SELECT key, value FROM settings').all<Row>();
   const out: any = { ...DEFAULT_APP_SETTINGS, dot_base_domain: env.DOT_BASE_DOMAIN || null };
   for (const r of rows.results) {
-    if (r.key === 'cf_dns_token') { out.cf_dns_token_set = true; continue; }
+    if (r.key === 'cf_dns_token') continue; // legacy: the token is a Worker secret now
     if (r.key.startsWith('policy_content_') || r.key === 'acme_account' || r.key === 'seeded_v1') continue;
     out[r.key] = parseJson(r.value, r.value);
   }
-  out.cf_dns_token_set = !!out.cf_dns_token_set || !!env.CF_API_TOKEN;
+  out.cf_dns_token_set = !!env.CF_DNS_TOKEN;
   return out as AppSettings;
 }
 

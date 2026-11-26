@@ -26,6 +26,7 @@ import (
 	"github.com/astralwalker0o/screens/gateway/internal/link"
 	"github.com/astralwalker0o/screens/gateway/internal/logbuf"
 	"github.com/astralwalker0o/screens/gateway/internal/mdns"
+	"github.com/astralwalker0o/screens/gateway/internal/netcfg"
 	"github.com/astralwalker0o/screens/gateway/internal/netx"
 	"github.com/astralwalker0o/screens/gateway/internal/ops"
 	"github.com/astralwalker0o/screens/gateway/internal/proto"
@@ -61,6 +62,7 @@ type Agent struct {
 	own   *netx.OwnAddrs
 	dns   *dnsd.Server
 	mdns  *mdns.Reflector
+	net   *netcfg.Manager
 	relay *relay.Manager
 	adb   *adb.ADB
 	disc  *discovery.Discovery
@@ -134,6 +136,8 @@ func (a *Agent) Run(parent context.Context) error {
 	a.own = netx.NewOwnAddrs()
 	a.dns = dnsd.New(data, a.fetch, a.comp("dns"))
 	a.mdns = mdns.New(a.comp("mdns"), a.own)
+	a.net = netcfg.New(netcfg.Netlink{}, netcfg.AcquireLease, a.comp("net"))
+	a.net.OnChange = a.reapplyListeners
 	a.relay = relay.NewManager(a.comp("relay"))
 	a.adb = adb.New(data, a.fetch, a.comp("adb"))
 	a.relay.OpenADB = a.adb.OpenService
@@ -146,6 +150,12 @@ func (a *Agent) Run(parent context.Context) error {
 	if p.Telemetry != nil {
 		t := p.Telemetry.WithDefaults()
 		a.telemetry.Store(&t)
+	}
+	// Network legs first so DNS/mDNS can bind to them (DHCP legs come up asynchronously; OnChange re-binds).
+	if len(p.Net) > 0 {
+		if _, err := a.applyNet(p.Net, false); err != nil {
+			a.log.Error("persisted net config rejected", "err", err)
+		}
 	}
 	if len(p.DNS) > 0 {
 		if _, err := a.applyDNS(p.DNS, false); err != nil {
@@ -179,6 +189,7 @@ func (a *Agent) Run(parent context.Context) error {
 	<-ctx.Done()
 	wg.Wait()
 	a.relay.Close()
+	a.net.Close()
 	a.mdns.Close()
 	a.dns.Close()
 	a.log.Info("agent stopped")
@@ -307,7 +318,7 @@ func (a *Agent) linkLoop(ctx context.Context) {
 }
 
 func (a *Agent) caps() []string {
-	c := []string{"dns", "dot", "mdns", "ssdp", "discovery", "wol", "http", "ws", "tcp", "update", "binary_streams"}
+	c := []string{"dns", "dot", "mdns", "ssdp", "discovery", "wol", "http", "ws", "tcp", "update", "binary_streams", "netcfg"}
 	if a.adb.Available() {
 		c = append([]string{"adb", "adb_stream"}, c...)
 	}
@@ -334,6 +345,11 @@ func (a *Agent) hello() any {
 
 func (a *Agent) onWelcome(w proto.Welcome) {
 	a.log.Info("welcome", "site_id", w.SiteID)
+	if len(w.Config.Net) > 0 && string(w.Config.Net) != "null" {
+		if _, err := a.applyNet(w.Config.Net, true); err != nil {
+			a.log.Error("welcome net config rejected", "err", err)
+		}
+	}
 	if len(w.Config.DNS) > 0 && string(w.Config.DNS) != "null" {
 		if _, err := a.applyDNS(w.Config.DNS, true); err != nil {
 			a.log.Error("welcome dns config rejected", "err", err)
@@ -388,4 +404,34 @@ func (a *Agent) applyMDNS(raw json.RawMessage, persist bool) (mdns.Result, error
 		}
 	}
 	return res, nil
+}
+
+// applyNet parses, applies and (optionally) persists the network-legs config.
+func (a *Agent) applyNet(raw json.RawMessage, persist bool) (netcfg.Result, error) {
+	cfg, err := netcfg.ParseConfig(raw)
+	if err != nil {
+		return netcfg.Result{}, proto.Errf(proto.CodeBadArgs, "%v", err)
+	}
+	res := a.net.Apply(cfg)
+	if persist && a.store != nil {
+		if err := a.store.Update(func(p *config.Persisted) { p.Net = append(json.RawMessage(nil), raw...) }); err != nil {
+			a.log.Error("persist net config", "err", err)
+		}
+	}
+	return res, nil
+}
+
+// reapplyListeners re-binds DNS and mDNS after interface addresses change (e.g. a DHCP lease
+// arrived on a new VLAN leg) and tells the cloud, so the dashboard and discovery see the new address.
+func (a *Agent) reapplyListeners() {
+	if a.store != nil {
+		p := a.store.Get()
+		if len(p.DNS) > 0 {
+			_, _ = a.applyDNS(p.DNS, false)
+		}
+		if len(p.MDNS) > 0 {
+			_, _ = a.applyMDNS(p.MDNS, false)
+		}
+	}
+	a.sendEvent("net.status", map[string]any{"interfaces": a.net.Status(), "host": netx.Describe()})
 }

@@ -1,7 +1,7 @@
 import { DurableObject } from 'cloudflare:workers';
 import type {
   Automation, AutomationAction, AutomationEvent, Device, DeviceKind, DevicePrivacy, Discovered, DnsLogEntry, DnsSummary, LiveEvent,
-  MdnsConfig, MdnsStatus,
+  MdnsConfig, MdnsStatus, NetIfaceStatus, NetworkState,
 } from '../../shared/types';
 import { adapterFor, DISCOVERY_MDNS, DISCOVERY_PORTS, fingerprint, parseSonosDescription, probeTarget, type RawHost } from '../adapters';
 import type { AdapterCtx } from '../adapters/types';
@@ -13,7 +13,7 @@ import { certNotAfter, issueCertificate, upsertRecord, zoneId } from '../acme/ac
 import type { Env } from '../env';
 import { b64Decode, b64Encode, openJson, sealJson, signAgentUrl } from '../lib/crypto';
 import {
-  audit, createJob, finishJob, getAppSettings, kioskPinHash, raiseAlert, resolveAlert, type Row, siteMdns, siteSettings, toAutomation, toDevice, toDiscovered,
+  audit, createJob, finishJob, getAppSettings, kioskPinHash, raiseAlert, resolveAlert, type Row, siteMdns, siteNetwork, siteSettings, toAutomation, toDevice, toDiscovered,
 } from '../lib/db';
 import { chunk, dayKey, hourKey, HttpError, isPrivateIPv4, normMac, now, parseJson, rid, sleep } from '../lib/util';
 import { scoreDevice } from '../privacy/score';
@@ -237,9 +237,11 @@ export class SiteHub extends DurableObject<Env> {
     const mdns = siteMdns(site);
     const dns = await buildDnsConfig(this.env, this.siteId, this.origin);
     this.setKv('caps', h.caps ?? []);
+    // Network legs go first in the welcome so the gateway brings them up before binding DNS/mDNS.
+    const net = (h.caps ?? []).includes('netcfg') ? siteNetwork(site) : undefined;
     ws.send(JSON.stringify({
       t: 'welcome', site_id: this.siteId, server_time: now(), binary_streams: (h.caps ?? []).includes('binary_streams'),
-      config: { dns, mdns, telemetry: { dns_batch_ms: 5000, metrics_ms: 60000, neighbors_ms: 300000 } },
+      config: { dns, mdns, ...(net ? { net } : {}), telemetry: { dns_batch_ms: 5000, metrics_ms: 60000, neighbors_ms: 300000 } },
     }));
     this.setKv('offline_since', null);
     this.setKv('dns_refresh', true); // re-read DNS listener state once the welcome config has been applied
@@ -275,6 +277,45 @@ export class SiteHub extends DurableObject<Env> {
     return true;
   }
 
+  // ---------------------------------------------------------------- gateway network legs
+  private gatewayId(): string | null { return (this.agent()?.deserializeAttachment() as any)?.gateway_id ?? null; }
+
+  /** Store a net.status / net.configure answer: leg states plus the refreshed interface list. */
+  private async recordNet(r: any) {
+    const st = { status: Array.isArray(r?.interfaces) ? r.interfaces : [], errors: Array.isArray(r?.errors) ? r.errors : [], at: now() };
+    this.setKv('net_status', st);
+    const gwId = this.gatewayId();
+    if (gwId && Array.isArray(r?.host)) {
+      await this.env.DB.prepare("UPDATE gateways SET info = json_set(info, '$.interfaces', json(?)) WHERE id = ?").bind(JSON.stringify(r.host), gwId).run();
+    }
+    this.broadcast({ type: 'network', status: st.status });
+  }
+
+  async networkState(live = false): Promise<NetworkState> {
+    const site = await this.site();
+    const supported = this.kv<string[]>('caps', []).includes('netcfg');
+    if (live && this.online && supported) {
+      try { await this.recordNet(await this.gw<any>('net.status', {}, 8000)); } catch { /* fall back to last known */ }
+    }
+    const gw = await this.env.DB.prepare("SELECT info FROM gateways WHERE site_id = ? AND status != 'revoked' ORDER BY connected_at DESC LIMIT 1").bind(this.siteId).first<Row>();
+    const st = this.kv<{ status: NetIfaceStatus[]; errors: string[]; at: number } | null>('net_status', null);
+    return {
+      supported, gateway_online: this.online, config: siteNetwork(site),
+      status: st?.status ?? [], errors: st?.errors ?? [], host: parseJson<any>(gw?.info, {}).interfaces ?? [], updated_at: st?.at ?? null,
+    };
+  }
+
+  /** Push the site's network legs to the gateway. Returns the resulting state (or the saved config if offline). */
+  async pushNetConfig(): Promise<NetworkState> {
+    if (this.online) {
+      if (!this.kv<string[]>('caps', []).includes('netcfg')) throw new AdapterError('unsupported', 'This gateway is too old to manage network interfaces. Update it from the Gateway tab first.');
+      const cfg = siteNetwork(await this.site());
+      await this.recordNet(await this.gw<any>('net.configure', cfg as unknown as Record<string, unknown>, 45_000));
+      this.ctx.waitUntil(this.pushDnsConfig().catch(() => false)); // refresh the DNS listener list shown in the dashboard
+    }
+    return this.networkState(false);
+  }
+
   // ---------------------------------------------------------------- events from the gateway
   private async deviceNames(): Promise<Map<string, string>> {
     if (this.names) return this.names;
@@ -293,6 +334,11 @@ export class SiteHub extends DurableObject<Env> {
         break;
       }
       case 'neighbors': await this.reconcileNeighbors(data.entries ?? []); break;
+      case 'net.status': {
+        await this.recordNet(data);
+        this.ctx.waitUntil(this.pushDnsConfig().catch(() => false)); // addresses changed: refresh the DNS listener list
+        break;
+      }
       case 'mdns.services': {
         this.sql.exec('DELETE FROM mdns_services');
         for (const s of (data.services ?? []).slice(0, 2000)) {
@@ -384,6 +430,7 @@ export class SiteHub extends DurableObject<Env> {
       },
       update: (fields) => this.updateDevice(row, fields),
       log: (msg) => this.sql.exec('INSERT INTO gwlog (ts, level, msg) VALUES (?,?,?)', now(), 'debug', `[${row.name}] ${msg}`),
+      gatewayAddrs: () => this.gatewayAddrs(),
     };
   }
 
@@ -1136,7 +1183,7 @@ export class SiteHub extends DurableObject<Env> {
     this.remember(siteId, origin);
     const allowed: Record<string, (...a: any[]) => Promise<unknown>> = {
       command: this.command, refreshDevice: this.refreshDevice, syncApps: this.syncApps, discover: this.discover, adopt: this.adopt,
-      dnsLog: this.dnsLog, dnsSummary: this.dnsSummary, privacy: this.privacy, mdnsStatus: this.mdnsStatus, gatewayLogs: this.gatewayLogs,
+      dnsLog: this.dnsLog, dnsSummary: this.dnsSummary, privacy: this.privacy, mdnsStatus: this.mdnsStatus, gatewayLogs: this.gatewayLogs, networkState: this.networkState, pushNetConfig: this.pushNetConfig,
       gatewayAction: this.gatewayAction, disconnectAgent: this.disconnectAgent, guestReset: this.guestReset, enforceApps: this.enforceApps,
       runAutomation: this.runAutomation, pushDnsConfig: this.pushDnsConfig, pushMdnsConfig: this.pushMdnsConfig, status: this.status,
       requestDot: this.requestDot, flushAggregates: this.flushAggregates, pushLauncherConfig: this.pushLauncherConfig,
@@ -1167,6 +1214,13 @@ export class SiteHub extends DurableObject<Env> {
     const base = (app.dot_base_domain || this.env.DOT_BASE_DOMAIN || '').replace(/^\.+|\.+$/g, '');
     if (!base) throw new HttpError(409, 'not_configured', 'Set the DNS-over-TLS base domain in Settings first');
     return `${site.slug}.${base}`;
+  }
+
+  /** The online gateway's usable IPv4 addresses as CIDRs (no loopback / docker bridge). */
+  async gatewayAddrs(): Promise<string[]> {
+    const gwRow = await this.env.DB.prepare("SELECT info FROM gateways WHERE site_id = ? AND status = 'online' ORDER BY connected_at DESC LIMIT 1").bind(this.siteId).first<Row>();
+    const ifaces = (parseJson<any>(gwRow?.info, {}).interfaces ?? []) as { addrs?: string[] }[];
+    return ifaces.flatMap((i) => i.addrs ?? []).filter((a) => /^\d+\.\d+\.\d+\.\d+\/\d+$/.test(a) && !a.startsWith('127.') && !a.startsWith('172.17.'));
   }
 
   /** Pick the gateway address on the subnet where most Android devices live. */

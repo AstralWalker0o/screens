@@ -17,6 +17,21 @@ export interface Release {
 
 export const RELEASES: Release[] = [
   {
+    version: '0.4.0',
+    date: '2026-11-26',
+    title: 'Add VLANs to the gateway from the dashboard',
+    summary: 'Give a site\'s gateway a leg on another VLAN in a couple of clicks, so it can reach, pair with and filter devices there.',
+    components: { gateway: '0.3.0', launcher: '1.0.0' },
+    notes: [
+      { kind: 'new', text: 'Gateway → Network interfaces → Add network: put the gateway on another VLAN, either as a tagged VLAN on its port or on a spare network port (such as a second network device on a Proxmox VM). DHCP or a fixed address.' },
+      { kind: 'new', text: 'The DNS filter, discovery and the mDNS reflector pick up new networks automatically. Remove one and the gateway gives its address back.' },
+      { kind: 'improved', text: 'Your router and the gateway machine\'s own network settings are left alone: Screens only takes an address on each VLAN, with no routes or DNS changes.' },
+      { kind: 'fixed', text: 'Samsung pairing explains the real problem when the TV is on a different VLAN from the gateway. Samsung only shows its "Allow" prompt to devices on its own network, so the fix is to add that VLAN to the gateway.' },
+      { kind: 'security', text: 'The Cloudflare DNS token now lives only as an encrypted Cloudflare Worker secret (CF_DNS_TOKEN) instead of in the app. The Settings page shows whether it\'s set and how to add it.' },
+      { kind: 'fixed', text: 'Settings → About shows the real version.' },
+    ],
+  },
+  {
     version: '0.3.2',
     date: '2026-11-26',
     title: 'Samsung 2024–2025 (Tizen 9) pairing',

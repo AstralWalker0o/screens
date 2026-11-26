@@ -5,7 +5,7 @@
 import type {
   Alert, Apk, AppPolicy, AppSettings, AuditEntry, Automation, Client, CommandRequest, CommandResult, Device,
   DeviceApp, DevicePrivacy, Discovered, DnsDomainStat, DnsList, DnsLogEntry, DnsPolicyBuild, DnsRule, DnsSummary,
-  EnrollResult, Gateway, GatewayInterface, Job, LiveEvent, MdnsConfig, MdnsStatus, Me, Overview, PrivacyOverview,
+  EnrollResult, Gateway, GatewayInterface, Job, LiveEvent, MdnsConfig, MdnsStatus, Me, NetConfig, NetworkState, Overview, PrivacyOverview,
   SiteDetail, SiteKind, SiteSummary, DeviceKind, BulkCommandRequest, BulkCommandResult, SiteSettings, GuestSettings, VersionInfo,
 } from '../shared/types';
 
@@ -147,6 +147,8 @@ export const api = {
     guestReset: (id: string, device_ids?: string[]) => post<GuestResetResult>(`/api/sites/${enc(id)}/guest-reset`, device_ids ? { device_ids } : {}),
     mdns: (id: string) => get<MdnsState>(`/api/sites/${enc(id)}/mdns`),
     saveMdns: (id: string, cfg: MdnsConfig) => put<Ok>(`/api/sites/${enc(id)}/mdns`, cfg),
+    network: (id: string) => get<NetworkState>(`/api/sites/${enc(id)}/network`),
+    saveNetwork: (id: string, cfg: NetConfig) => put<NetworkState>(`/api/sites/${enc(id)}/network`, cfg),
     dnsLog: (id: string, q: DnsLogQuery = {}) => get<DnsLogEntry[]>(`/api/sites/${enc(id)}/dns/log${qs({ limit: 200, ...q })}`),
     dnsSummary: (id: string, hours = 24) => get<DnsSummary>(`/api/sites/${enc(id)}/dns/summary${qs({ hours })}`),
   },

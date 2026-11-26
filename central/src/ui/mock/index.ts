@@ -1,6 +1,7 @@
 // In-memory mock of the Screens API (docs/API.md). Loaded only in mock mode.
 
 import { ApiError } from '../api';
+import type { NetConfig, NetworkState } from '../../shared/types';
 import type {
   Alert, Apk, AppPolicy, AppSettings, Automation, Client, CommandResult, Device, DeviceKind, DevicePrivacy, DnsLogEntry,
   DnsRule, Gateway, Job, LiveEvent, MdnsConfig, MdnsStatus, Overview, PrivacyOverview, SiteDetail, SiteSummary, AuditEntry,
@@ -33,6 +34,7 @@ const db = {
   builds: clone(F.builds),
   discovered: clone(F.discovered),
   mdns: clone(F.mdnsConfig),
+  network: {} as Record<string, NetConfig>,
   apks: clone(F.apks),
   appPolicies: clone(F.appPolicies),
   automations: clone(F.automations),
@@ -778,6 +780,25 @@ on('POST', '/api/sites/:id/guest-reset', async (c) => {
   return { results };
 });
 on('GET', '/api/sites/:id/mdns', (c) => mdnsState(c.params[0]));
+function networkState(siteId: string): NetworkState {
+  const gw = db.gateways.find((g) => g.site_id === siteId && g.status !== 'revoked');
+  const config = db.network[siteId] ?? { interfaces: [] };
+  const host = [...(gw?.interfaces ?? [])];
+  const status = config.interfaces.map((l, i) => {
+    const name = l.kind === 'vlan' ? `scr${l.vlan}` : l.name!;
+    const addr = l.mode === 'static' ? l.address! : `10.${50 + i}.${l.vlan ?? 0}.23/24`;
+    if (!host.some((h) => h.name === name)) host.push({ name, mac: gw?.interfaces?.[0]?.mac ?? '', addrs: [addr], up: true, multicast: true });
+    return { name, kind: l.kind, parent: l.parent, vlan: l.vlan, mode: l.mode, state: 'up' as const, addrs: [addr], ...(l.mode === 'dhcp' ? { lease_at: Date.now(), expires: Date.now() + 86_400_000 } : {}) };
+  });
+  return { supported: !!gw, gateway_online: gw?.status === 'online', config, status, errors: [], host, updated_at: Date.now() };
+}
+on('GET', '/api/sites/:id/network', (c) => networkState(c.params[0]));
+on('PUT', '/api/sites/:id/network', async (c) => {
+  await sleep(900);
+  db.network[c.params[0]] = b<NetConfig>(c);
+  logAudit('network.update', 'site', c.params[0], c.params[0]);
+  return networkState(c.params[0]);
+});
 on('PUT', '/api/sites/:id/mdns', (c) => {
   db.mdns[c.params[0]] = b<MdnsConfig>(c);
   logAudit('mdns.update', 'site', c.params[0], c.params[0]);
@@ -1025,12 +1046,7 @@ on('GET', '/api/audit', (c) => {
 on('GET', '/api/settings', () => db.settings);
 on('PUT', '/api/settings', async (c) => {
   const { cf_dns_token, ...rest } = b<AppSettings>(c);
-  if (cf_dns_token !== undefined) {
-    await sleep(700);
-    if (cf_dns_token === '') db.settings.cf_dns_token_set = false;
-    else if (cf_dns_token.trim().length < 30) throw err(400, 'cf_token_invalid', 'Cloudflare rejected this token: Invalid API Token (code 1000). Check you copied the whole token.');
-    else db.settings.cf_dns_token_set = true;
-  }
+  if (cf_dns_token !== undefined) throw err(400, 'secret_only', 'The Cloudflare DNS token is a Worker secret (CF_DNS_TOKEN) and can’t be set from the dashboard.');
   db.settings = { ...db.settings, ...rest };
   logAudit('settings.update', 'settings');
   return db.settings;

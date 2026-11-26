@@ -22,6 +22,8 @@ export interface AdapterCtx {
   setSecrets(v: object): Promise<void>;
   update(fields: Record<string, unknown>): Promise<void>;     // persist device fields (facts merged)
   log(msg: string): void;
+  /** The site gateway's IPv4 addresses as CIDRs (e.g. "10.10.100.237/24"), from its last hello/status. */
+  gatewayAddrs(): Promise<string[]>;
 }
 
 export interface Adapter {

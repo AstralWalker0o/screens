@@ -141,6 +141,7 @@ func DecodeBinaryStream(b []byte) (id string, payload []byte, ok bool) {
 type WelcomeConfig struct {
 	DNS       json.RawMessage `json:"dns,omitempty"`
 	MDNS      json.RawMessage `json:"mdns,omitempty"`
+	Net       json.RawMessage `json:"net,omitempty"`
 	Telemetry *Telemetry      `json:"telemetry,omitempty"`
 }
 

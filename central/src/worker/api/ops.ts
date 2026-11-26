@@ -4,7 +4,7 @@ import { APP_VERSION } from '../../shared/releases';
 import { BUILD_SHA, BUILD_TIME } from '../../shared/build';
 import { parseCron } from '../automations/cron';
 import { parseApk } from '../lib/apk';
-import { sealJson, sha256Hex } from '../lib/crypto';
+import { sha256Hex } from '../lib/crypto';
 import { audit, getAppSettings, type Row, setAppSetting, toAlert, toAutomation, toJob } from '../lib/db';
 import { hub, originOf } from '../lib/hub';
 import { assertPackage, HttpError, now, parseJson, rid } from '../lib/util';
@@ -199,18 +199,10 @@ opsRoutes.put('/settings', async (c) => {
   if (b.default_monitor_days !== undefined) await setAppSetting(c.env, 'default_monitor_days', Math.min(60, Math.max(0, Number(b.default_monitor_days) || 0)));
   if (b.default_policy !== undefined) await setAppSetting(c.env, 'default_policy', b.default_policy === 'strict' ? 'strict' : 'balanced');
   if (b.cf_dns_token !== undefined) {
-    const tok = String(b.cf_dns_token).trim();
-    if (tok && !/^[A-Za-z0-9_-]{30,100}$/.test(tok)) throw new HttpError(400, 'bad_request', 'That does not look like a Cloudflare API token');
-    if (tok) {
-      const v = await fetch('https://api.cloudflare.com/client/v4/user/tokens/verify', { headers: { Authorization: `Bearer ${tok}` } }).then((r) => r.json<any>()).catch(() => null);
-      if (!v?.success) throw new HttpError(400, 'bad_token', 'Cloudflare rejected that token. Create one with the "Edit zone DNS" template for your domain.');
-      await setAppSetting(c.env, 'cf_dns_token', await sealJson(c.env.SECRETS_KEY, tok));
-    } else {
-      await c.env.DB.prepare("DELETE FROM settings WHERE key = 'cf_dns_token'").run();
-    }
+    throw new HttpError(400, 'secret_only', 'The Cloudflare DNS token is kept as a Worker secret (CF_DNS_TOKEN), not in the app. Add it in Cloudflare: Workers & Pages → screens → Settings → Variables and Secrets.');
   }
   if (b.dns_log_retention_days !== undefined) await setAppSetting(c.env, 'dns_log_retention_days', Math.min(30, Math.max(1, Number(b.dns_log_retention_days) || 7)));
-  await audit(c.env, actorOf(c), 'settings.update', { details: { ...b, cf_dns_token: b.cf_dns_token === undefined ? undefined : '[redacted]' } });
+  await audit(c.env, actorOf(c), 'settings.update', { details: b });
   return c.json(await getAppSettings(c.env));
 });
 

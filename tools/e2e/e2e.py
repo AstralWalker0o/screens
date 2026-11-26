@@ -51,7 +51,7 @@ def sim_events(kind, since):
 
 NETNS = os.environ.get('SIM_NETNS', 'simlan')
 
-def dns_query(name, src_ip, server, qtype=1):
+def dns_query(name, src_ip, server, qtype=1, ns=None):
     """Send a DNS query from a simulated device's IP (inside the sim network namespace)."""
     code = (
         "import random,socket,struct,sys,json\n"
@@ -62,7 +62,7 @@ def dns_query(name, src_ip, server, qtype=1):
         "ips=[socket.inet_ntoa(d[-4:])] if an and d[-6:-4]==b'\\x00\\x04' else []\n"
         "print(json.dumps([d[3]&15,ips]))\n"
     )
-    out = subprocess.run(['ip', 'netns', 'exec', NETNS, 'python3', '-c', code, name, src_ip, server], capture_output=True, text=True, timeout=10)
+    out = subprocess.run(['ip', 'netns', 'exec', ns or NETNS, 'python3', '-c', code, name, src_ip, server], capture_output=True, text=True, timeout=10)
     if out.returncode != 0: raise RuntimeError(out.stderr[-300:])
     rcode, ips = json.loads(out.stdout)
     return rcode, ips
@@ -472,6 +472,47 @@ def main():
         except Exception as e:
             check('section live screen mirroring completed', False, str(e)[:300])
 
+        print('== network legs (dashboard-managed interfaces)')
+        try:
+            if not os.path.exists('/sys/class/net/lan2'):
+                check('network legs: spare port lan2 present (run.sh creates it)', False, 'lan2 missing')
+            else:
+                st = api('GET', f'/api/sites/{sid}/network')
+                check('network: gateway supports managed interfaces', st['supported'] and st['gateway_online'], json.dumps(st)[:300])
+                lan2 = next((h for h in st['host'] if h['name'] == 'lan2'), None)
+                check('network: spare port listed without an address', lan2 is not None and not [a for a in lan2['addrs'] if '.' in a], json.dumps(lan2))
+                try:
+                    api('PUT', f'/api/sites/{sid}/network', {'interfaces': [{'kind': 'existing', 'name': 'lan2', 'mode': 'static', 'address': '8.8.8.8/24'}]})
+                    check('network: public static address rejected', False)
+                except AssertionError as e:
+                    check('network: public static address rejected', '400' in str(e), str(e)[:200])
+                api('PUT', f'/api/sites/{sid}/network', {'interfaces': [{'kind': 'existing', 'name': 'lan2', 'mode': 'dhcp', 'label': 'E2E IoT'}]})
+                up = wait(lambda: (lambda x: x if any(i['name'] == 'lan2' and i['state'] == 'up' and any(a.startswith('10.98.0.') for a in i['addrs']) for i in x['status']) else None)(api('GET', f'/api/sites/{sid}/network')), 30)
+                leg = next((i for i in (up or {}).get('status', []) if i['name'] == 'lan2'), {})
+                check('network: DHCP lease acquired on the spare port', bool(up), json.dumps(api('GET', f'/api/sites/{sid}/network'))[:400])
+                addr = next((a.split('/')[0] for a in leg.get('addrs', []) if a.startswith('10.98.0.')), None)
+                check('network: lease has an expiry (renewed automatically)', bool(leg.get('expires')), json.dumps(leg))
+                host = next((h for h in (up or {}).get('host', []) if h['name'] == 'lan2'), {})
+                check('network: interface list refreshed for the dashboard / mDNS picker', addr is not None and any(a.startswith(addr) for a in host.get('addrs', [])), json.dumps(host))
+                if addr:
+                    ok = wait(lambda: any(a.startswith(addr + ':') for a in api('GET', f'/api/sites/{sid}/gateway').get('dns_listening') or []), 20)
+                    check('network: DNS filter re-bound to the new leg', ok, str(api('GET', f'/api/sites/{sid}/gateway').get('dns_listening')))
+                    rc, ips = dns_query('example.com', '10.98.0.1', addr, ns='simvlan') if ok else (None, None)
+                    check('network: devices on the new VLAN get answers from the gateway', rc in (0, 2, 3), f'rc={rc} ips={ips}')
+                r = api('PUT', f'/api/sites/{sid}/network', {'interfaces': [{'kind': 'existing', 'name': 'lan2', 'mode': 'dhcp'}, {'kind': 'vlan', 'parent': 'lan0', 'vlan': 77, 'mode': 'dhcp'}]})
+                bad = next((i for i in r['status'] if i['name'] == 'scr77'), None) or {}
+                errs = (bad.get('error') or '') + ' '.join(r.get('errors') or [])
+                still = any(i['name'] == 'lan2' and i['state'] == 'up' for i in r['status'])
+                if os.path.exists('/proc/net/vlan/config'):
+                    check('network: VLAN sub-interface created', bad.get('state') in ('up', 'acquiring'), json.dumps(r)[:400])
+                else:  # this kernel has no 802.1Q: the failure must be explained and must not disturb the working leg
+                    check('network: VLAN failure explained, other legs untouched', bool(errs.strip()) and still, json.dumps(r)[:400])
+                r = api('PUT', f'/api/sites/{sid}/network', {'interfaces': []})
+                gone = wait(lambda: not subprocess.run(['ip', '-4', '-o', 'addr', 'show', 'dev', 'lan2'], capture_output=True, text=True).stdout.strip(), 10)
+                check('network: removing a leg releases its address', bool(gone), subprocess.run(['ip', '-4', '-o', 'addr', 'show', 'dev', 'lan2'], capture_output=True, text=True).stdout)
+                check('network: no stray scr* links left', not [n for n in os.listdir('/sys/class/net') if n.startswith('scr')], str(os.listdir('/sys/class/net')))
+        except Exception as e:
+            check('section network legs completed', False, str(e)[:300])
         print('== automations')
         try:
             a = api('POST', '/api/automations', {'name': 'E2E: home key', 'scope_type': 'site', 'scope_id': sid, 'trigger': {'type': 'schedule', 'cron': '0 3 * * *'}, 'target': {'kinds': ['android']}, 'actions': [{'type': 'command', 'command': 'key', 'args': {'key': 'HOME'}}]})

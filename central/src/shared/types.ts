@@ -210,6 +210,31 @@ export interface DnsList {
 
 export interface DnsPolicyBuild { policy: DnsPolicyName; sha256: string; rules: number; built_at: number }
 
+/** A network leg the gateway manages: a VLAN sub-interface on a trunked NIC, or an extra NIC the host left unconfigured. */
+export interface NetIfaceConfig {
+  kind: 'vlan' | 'existing';
+  parent?: string;              // vlan: the trunked NIC (e.g. "eth0")
+  vlan?: number;                // vlan: 1–4094
+  name?: string;                // existing: the NIC to configure (e.g. "ens19")
+  mode: 'dhcp' | 'static';
+  address?: string;             // static: CIDR, e.g. "10.10.50.5/24"
+  label?: string;               // free text shown in the dashboard ("IoT", "Main")
+}
+export interface NetConfig { interfaces: NetIfaceConfig[] }
+export interface NetIfaceStatus {
+  name: string; kind: 'vlan' | 'existing'; parent?: string; vlan?: number; mode: 'dhcp' | 'static';
+  state: 'up' | 'acquiring' | 'error'; addrs: string[]; error?: string; lease_at?: number; expires?: number;
+}
+export interface NetworkState {
+  supported: boolean;            // the gateway's agent can manage interfaces (cap "netcfg")
+  gateway_online: boolean;
+  config: NetConfig;
+  status: NetIfaceStatus[];      // live (or last known) state of each managed leg
+  errors: string[];
+  host: GatewayInterface[];      // every interface the gateway sees, managed or not
+  updated_at: number | null;
+}
+
 export interface MdnsRule { from: string; to: string[]; allow: string[]; deny: string[] }
 export interface MdnsConfig {
   enabled: boolean; interfaces: string[]; rules: MdnsRule[];
@@ -312,7 +337,8 @@ export type LiveEvent =
   | { type: 'device'; device: Partial<Device> & { id: string } }
   | { type: 'gateway'; status: 'online' | 'offline'; gateway?: Partial<Gateway> }
   | { type: 'job'; job: Job }
-  | { type: 'alert'; alert: Alert };
+  | { type: 'alert'; alert: Alert }
+  | { type: 'network'; status: NetIfaceStatus[] };
 
 export interface Paged<T> { items: T[]; next?: string | null }
 

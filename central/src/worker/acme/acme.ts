@@ -12,16 +12,14 @@ const enc = new TextEncoder();
 
 interface AcmeAccount { jwk: JsonWebKey; kid?: string; directory: string }
 
-async function dnsToken(env: Env): Promise<string> {
-  if (env.CF_API_TOKEN) return env.CF_API_TOKEN;
-  const row = await env.DB.prepare("SELECT value FROM settings WHERE key = 'cf_dns_token'").first<Row>();
-  const tok = row ? await openJson<string | null>(env.SECRETS_KEY, JSON.parse(row.value), null) : null;
-  if (!tok) throw new Error('No Cloudflare DNS token saved. Add one in Settings → Private DNS (template "Edit zone DNS").');
-  return tok;
+/** The Cloudflare DNS token lives only in the Worker secret CF_DNS_TOKEN (never in D1). */
+function dnsToken(env: Env): string {
+  if (env.CF_DNS_TOKEN) return env.CF_DNS_TOKEN;
+  throw new Error('No Cloudflare DNS token. Add the Worker secret CF_DNS_TOKEN (Cloudflare → Workers & Pages → screens → Settings → Variables and Secrets), using a token from the "Edit zone DNS" template.');
 }
 
 async function cf(env: Env, path: string, init: RequestInit = {}): Promise<any> {
-  const token = await dnsToken(env);
+  const token = dnsToken(env);
   const res = await fetch(`https://api.cloudflare.com/client/v4${path}`, {
     ...init, headers: { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json', ...(init.headers ?? {}) },
   });

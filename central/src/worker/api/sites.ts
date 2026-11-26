@@ -5,6 +5,7 @@ import {
   audit, DEFAULT_SITE_SETTINGS, getAppSettings, kioskPinHash, type Row, siteMdns, siteSettings, toAlert, toDevice, toDiscovered, toGateway, toJob,
 } from '../lib/db';
 import { hub, hubStub, originOf } from '../lib/hub';
+import { sanitizeNetConfig } from '../lib/netcfg';
 import { HttpError, isPrivateIPv4, now, parseJson, rid, slugify } from '../lib/util';
 import { actorOf, type AppEnv, body, fleetDnsSummary, siteSummaries } from './shared';
 
@@ -294,6 +295,25 @@ siteRoutes.get('/sites/:id/apps', async (c) => {
     FROM device_apps a JOIN devices d ON d.id = a.device_id LEFT JOIN app_catalog k ON k.package = a.package
     WHERE d.site_id = ? GROUP BY a.package ORDER BY min(a.system), label`).bind(c.req.param('id')).all<Row>();
   return c.json(rows.results.map((r) => ({ package: r.package, label: r.label, system: !!r.system, category: r.category, risk: r.risk, devices: r.devices, kinds: String(r.kinds ?? '').split(',') })));
+});
+
+// ---------------------------------------------------------------- gateway network legs
+siteRoutes.get('/sites/:id/network', async (c) => {
+  const id = c.req.param('id');
+  const site = await c.env.DB.prepare('SELECT id FROM sites WHERE id = ?').bind(id).first<Row>();
+  if (!site) throw new HttpError(404, 'not_found', 'Site not found');
+  return c.json(await hub(c.env, id, originOf(c.req.raw, c.env), 'networkState', true));
+});
+
+siteRoutes.put('/sites/:id/network', async (c) => {
+  const id = c.req.param('id');
+  const site = await c.env.DB.prepare('SELECT id FROM sites WHERE id = ?').bind(id).first<Row>();
+  if (!site) throw new HttpError(404, 'not_found', 'Site not found');
+  const cfg = sanitizeNetConfig(await body(c));
+  await c.env.DB.prepare('UPDATE sites SET network = ? WHERE id = ?').bind(JSON.stringify(cfg), id).run();
+  await audit(c.env, actorOf(c), 'network.update', { site_id: id, details: cfg });
+  const state = await hub(c.env, id, originOf(c.req.raw, c.env), 'pushNetConfig').catch((e) => { throw new HttpError(502, 'push_failed', `Saved, but the gateway could not apply it: ${e.message}`); });
+  return c.json(state);
 });
 
 // ---------------------------------------------------------------- mDNS reflector

@@ -1,5 +1,6 @@
 import { useEffect, useState } from 'react';
 import { Save, KeyRound, CircleCheck, CircleDashed, ShieldCheck, Router, Palette, Info, Lock, Sun, Moon, Monitor, FlaskConical } from 'lucide-react';
+import { APP_VERSION } from '../../shared/releases';
 import type { AppSettings, DnsPolicyName } from '../../shared/types';
 import { api, MOCK, setMockMode } from '../api';
 import { act, errorMessage, setQueryData, useQuery } from '../lib/query';
@@ -97,7 +98,7 @@ export default function Settings() {
             <Card>
               <CardHeader title="About Screens" icon={Info} />
               <CardBody className="space-y-3 text-sm text-muted">
-                <KeyVal items={[['Version', 'Central 0.1.0'], ['Signed in as', me.data?.email ?? '…'], ['Sign-in', me.data?.dev ? 'Local development (no Cloudflare Access)' : 'Cloudflare Access']]} />
+                <KeyVal items={[['Version', `Screens ${APP_VERSION}`], ['Signed in as', me.data?.email ?? '…'], ['Sign-in', me.data?.dev ? 'Local development (no Cloudflare Access)' : 'Cloudflare Access']]} />
                 <p>
                   Screens watches what your TVs, streaming boxes and speakers talk to, blocks the spying (ACR, ads, telemetry) with a DNS filter at each site, and lets you control the devices from anywhere.
                 </p>
@@ -115,30 +116,9 @@ export default function Settings() {
 }
 
 function PrivateDnsCard({ form, setForm, saved }: { form: AppSettings; setForm: (f: AppSettings) => void; saved?: AppSettings }) {
-  const [token, setToken] = useState('');
-  const [busy, setBusy] = useState(false);
-  const [error, setError] = useState<string | null>(null);
-  const [confirmRemove, setConfirmRemove] = useState(false);
   const isSet = !!saved?.cf_dns_token_set;
   const base = form.dot_base_domain || DEFAULT_DOT;
-
-  const putToken = async (value: string) => {
-    setBusy(true);
-    setError(null);
-    try {
-      const r = await api.settings.save({ cf_dns_token: value });
-      setQueryData<AppSettings>('settings', (old) => ({ ...(old ?? r), ...r, cf_dns_token_set: r.cf_dns_token_set ?? value !== '' }));
-      setToken('');
-      toast.success(value ? 'Cloudflare token saved' : 'Cloudflare token removed');
-      return true;
-    } catch (e) {
-      setError(errorMessage(e));
-      toast.error(value ? 'Token not saved' : 'Couldn’t remove the token', errorMessage(e));
-      return false;
-    } finally {
-      setBusy(false);
-    }
-  };
+  const zone = base.split('.').slice(-2).join('.');
 
   return (
     <Card>
@@ -155,62 +135,25 @@ function PrivateDnsCard({ form, setForm, saved }: { form: AppSettings; setForm: 
           <div className="flex flex-wrap items-center justify-between gap-2">
             <p className="text-sm font-medium text-fg">Cloudflare DNS token</p>
             {isSet ? (
-              <StatusText tone="ok" icon={CircleCheck}>Saved ✓</StatusText>
+              <StatusText tone="ok" icon={CircleCheck}>Set as a Worker secret</StatusText>
             ) : (
               <StatusText tone="neutral" icon={CircleDashed}>Not set</StatusText>
             )}
           </div>
           <p className="mt-1.5 text-xs text-muted">
-            Create a token in Cloudflare → My Profile → API Tokens → Create Token → template “Edit zone DNS” → Zone: supercluster.au. Screens uses it only to publish each site’s DNS-over-TLS hostname and its certificate challenge.
+            Screens uses this token only to publish each site’s DNS-over-TLS hostname and its certificate challenge. It is kept as an encrypted Cloudflare Worker secret, never in the Screens database, and nobody can read it back from the dashboard.
           </p>
-          <form
-            className="mt-3 flex flex-col gap-2 sm:flex-row sm:items-start"
-            onSubmit={(e) => {
-              e.preventDefault();
-              if (token.trim()) void putToken(token.trim());
-            }}
-          >
-            <div className="min-w-0 flex-1">
-              <Input
-                type="password"
-                autoComplete="off"
-                spellCheck={false}
-                aria-label="Cloudflare API token"
-                placeholder={isSet ? 'Paste a new token to replace the saved one' : 'Paste the API token'}
-                value={token}
-                onChange={(e) => {
-                  setToken(e.target.value);
-                  setError(null);
-                }}
-                aria-invalid={!!error}
-                aria-describedby={error ? 'cf-token-error' : undefined}
-                mono
-              />
-              {error && <p id="cf-token-error" className="mt-1 text-xs text-crit-fg">{error}</p>}
-            </div>
-            <Button type="submit" variant="primary" icon={Save} loading={busy && !!token} disabled={!token.trim()}>
-              {isSet ? 'Replace token' : 'Save token'}
-            </Button>
-          </form>
-          {isSet && (
-            <button type="button" className="mt-2 text-xs font-medium text-crit-fg hover:underline" onClick={() => setConfirmRemove(true)}>
-              Remove token
-            </button>
+          {!isSet && (
+            <ol className="mt-3 list-decimal space-y-1.5 pl-5 text-xs text-muted">
+              <li>In Cloudflare go to <span className="text-fg">My Profile → API Tokens → Create Token</span>, choose the <span className="text-fg">“Edit zone DNS”</span> template and set <span className="text-fg">Zone → {zone}</span>. Create it and copy the token.</li>
+              <li>Go to <span className="text-fg">Workers &amp; Pages → screens → Settings → Variables and Secrets → Add</span>.</li>
+              <li>Type <span className="text-fg">Secret</span>, name <code className="rounded bg-surface px-1 font-mono text-fg">CF_DNS_TOKEN</code>, paste the token as the value, then <span className="text-fg">Deploy</span>.</li>
+              <li>Reload this page. It shows “Set as a Worker secret” when Screens can see it.</li>
+            </ol>
           )}
+          {isSet && <p className="mt-2 text-xs text-muted">To replace or remove it, edit <code className="rounded bg-surface px-1 font-mono text-fg">CF_DNS_TOKEN</code> under Workers &amp; Pages → screens → Settings → Variables and Secrets.</p>}
         </div>
       </CardBody>
-      <ConfirmDialog
-        open={confirmRemove}
-        onClose={() => setConfirmRemove(false)}
-        danger
-        title="Remove the Cloudflare token?"
-        confirmLabel="Remove token"
-        onConfirm={async () => {
-          if (await putToken('')) setConfirmRemove(false);
-        }}
-      >
-        <p>Existing Private DNS hostnames keep working until their certificates expire, but Screens won’t be able to create hostnames for new sites or renew certificates.</p>
-      </ConfirmDialog>
     </Card>
   );
 }

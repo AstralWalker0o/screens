@@ -37,6 +37,27 @@ if ! ns_ok simmain lan1; then
   ip netns exec simmain ip route add default via 10.88.0.1
 fi
 
+# Third namespace = a VLAN reached through a spare, unconfigured port (lan2) with its own DHCP server,
+# for the dashboard-managed network legs test.
+if ! ns_ok simvlan lan2; then
+  ip netns del simvlan 2>/dev/null || true; ip link del lan2 2>/dev/null || true
+  ip netns add simvlan
+  ip link add lan2 type veth peer name simeth2
+  ip link set simeth2 netns simvlan
+  ip link set lan2 up multicast on          # deliberately no address: the gateway configures it
+  ip netns exec simvlan ip link set lo up
+  ip netns exec simvlan ip link set simeth2 up multicast on
+  ip netns exec simvlan ip addr add 10.98.0.1/24 dev simeth2
+fi
+ip -4 addr flush dev lan2 2>/dev/null || true
+if command -v dnsmasq >/dev/null; then
+  pkill -f 'dnsmasq.*simeth2' 2>/dev/null || true
+  ip netns exec simvlan dnsmasq --no-daemon --port=0 --interface=simeth2 --bind-interfaces \
+    --dhcp-range=10.98.0.100,10.98.0.150,255.255.255.0,10m --dhcp-option=3 --dhcp-leasefile=/tmp/screens-e2e-dhcp.leases >/tmp/screens-e2e-dnsmasq.log 2>&1 &
+else
+  echo "dnsmasq not installed: the network-legs DHCP test will fail (apt-get install dnsmasq-base)"
+fi
+
 pkill -f tools/sim/sim.py 2>/dev/null || true
 : > "$ROOT/tools/sim/sim.log"
 ip netns exec "$NS" python3 "$ROOT/tools/sim/sim.py" --samsung 10.99.0.20 --samsung9 10.99.0.21 --samsung-deny 10.99.0.22 --sonos 10.99.0.30,10.99.0.31 --android 10.99.0.10,10.99.0.11 &
@@ -55,6 +76,6 @@ fi
 (cd "$ROOT/gateway" && ./build.sh >/dev/null)
 "$ROOT/tools/vendor-upload.sh" --local >/dev/null      # scrcpy server for mirroring
 (cd "$ROOT/central" && npx vite build >/dev/null)       # dashboard for the UI mirror test
-trap 'kill $SIM ${WR:-} 2>/dev/null || true' EXIT
+trap 'kill $SIM ${WR:-} 2>/dev/null || true; pkill -f "dnsmasq.*simeth2" 2>/dev/null || true' EXIT
 python3 "$ROOT/tools/e2e/e2e.py"
 python3 "$ROOT/tools/e2e/ui_mirror.py"   # real dashboard player against the real chain

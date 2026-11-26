@@ -63,3 +63,13 @@ export function assertPackage(p: unknown): string {
 export function domainValid(d: string): boolean {
   return /^(?=.{1,253}$)(\*\.)?([a-z0-9_]([a-z0-9_-]{0,61}[a-z0-9_])?\.)+[a-z0-9-]{2,63}$/i.test(d);
 }
+
+const ipv4Int = (ip: string) => ip.split('.').reduce((a, o) => (a << 8) + Number(o), 0) >>> 0;
+/** True when `ip` falls inside `cidr` (IPv4 only, e.g. "10.10.50.7" in "10.10.50.1/24"). */
+export function ipInCidr(ip: string, cidr: string): boolean {
+  const [net, bitsRaw] = cidr.split('/');
+  const bits = Number(bitsRaw);
+  if (!/^\d+\.\d+\.\d+\.\d+$/.test(ip) || !/^\d+\.\d+\.\d+\.\d+$/.test(net ?? '') || !(bits >= 0 && bits <= 32)) return false;
+  const mask = bits === 0 ? 0 : (~0 << (32 - bits)) >>> 0;
+  return ((ipv4Int(ip) & mask) >>> 0) === ((ipv4Int(net) & mask) >>> 0);
+}

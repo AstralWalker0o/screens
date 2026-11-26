@@ -1,5 +1,5 @@
 import { b64Encode } from '../lib/crypto';
-import { parseJson, sleep } from '../lib/util';
+import { parseJson, sleep, ipInCidr } from '../lib/util';
 import type { Adapter, AdapterCtx, HubStream, KeyName } from './types';
 import { AdapterError, requireKey, xmlEscape } from './types';
 
@@ -49,6 +49,13 @@ export const SAMSUNG_HELP = {
   silent: `The TV did not respond to the pairing request. Check ${MENU} → "Access Notification" is "First Time Only" or "Always On", make sure the TV is fully on (not in standby), then press Pair again.`,
 };
 
+/** Samsung only shows the Allow prompt to devices on its own subnet; from another VLAN it answers timeOut/unauthorized. */
+export function samsungVlanHelp(tvIp: string, gatewayCidrs: string[]): string | null {
+  if (!gatewayCidrs.length || gatewayCidrs.some((c) => ipInCidr(tvIp, c))) return null;
+  const tvNet = tvIp.split('.').slice(0, 3).join('.');
+  return `This TV (${tvIp}) is on a different network (VLAN) from the gateway (${gatewayCidrs.map((c) => c.split('/')[0]).join(', ')}). Samsung TVs only show the "Allow" prompt to devices on their own network, so they refuse or time out instead. Give the gateway a leg on the TV's network: Site → Gateway → Network interfaces → add the VLAN that uses ${tvNet}.x, then press Pair again. Nothing on your router needs to change.`;
+}
+
 /**
  * Open the remote-control channel. Handles both behaviours seen in the wild:
  *  - classic Tizen: the TV sends ms.channel.connect (or unauthorized/timeOut) right after the handshake;
@@ -65,13 +72,20 @@ async function remote(ctx: AdapterCtx, waitForApprovalMs = 8000): Promise<HubStr
   const url = secure
     ? `wss://${ctx.device.ip}:8002/api/v2/channels/samsung.remote.control?name=${encodeURIComponent(CLIENT_NAME)}${secrets.token ? `&token=${secrets.token}` : ''}`
     : `ws://${ctx.device.ip}:8001/api/v2/channels/samsung.remote.control?name=${encodeURIComponent(CLIENT_NAME)}`;
+  const opened = Date.now();
+  const trace: { t: number; e: string }[] = [];
+  const note = (e: string) => { if (trace.length < 12) trace.push({ t: Date.now() - opened, e: e.slice(0, 160) }); };
   const stream = await ctx.openWs(url, { insecure_tls: true });
+  note('open');
   const deadline = Date.now() + waitForApprovalMs;
   let registered = false, promptShown = false;
   const fail = async (event: string, code: string, message: string): Promise<never> => {
     stream.close();
-    await ctx.update({ facts: { pairing_event: event, pairing_detail: message, pairing_at: Date.now() } });
-    throw new AdapterError(code, message);
+    // Pairing failures from another VLAN look like timeouts/refusals; say what actually needs fixing.
+    const vlan = secrets.token || !['timeOut', 'unauthorized', 'closed', 'silent'].includes(event) ? null : samsungVlanHelp(ctx.device.ip, await ctx.gatewayAddrs().catch(() => []));
+    const detail = vlan ?? message;
+    await ctx.update({ facts: { pairing_event: event, pairing_detail: detail, pairing_hint: vlan ? 'vlan' : null, pairing_trace: trace, pairing_at: Date.now() } });
+    throw new AdapterError(code, detail);
   };
   for (;;) {
     const left = deadline - Date.now();
@@ -83,15 +97,17 @@ async function remote(ctx: AdapterCtx, waitForApprovalMs = 8000): Promise<HubStr
       if (!registered) {
         registered = true;
         stream.send(JSON.stringify({ method: 'ms.channel.connect', params: { deviceName: 'Screens', id: ctx.device.id, type: 'native', token: secrets.token ?? '' } }));
+        note('sent register');
       }
       continue;
     }
     const msg = parseJson<any>(raw, {});
     const ev = String(msg.event ?? '');
+    note(ev === 'ms.error' ? `ms.error: ${String(msg.data?.message ?? '')}` : ev || 'non-json');
     if (ev === 'ms.channel.connect') {
       const token = msg.data?.token;
       if (token && token !== secrets.token) await ctx.setSecrets({ ...secrets, token: String(token) });
-      if (facts.pairing_event) await ctx.update({ facts: { pairing_event: 'connected', pairing_detail: null, pairing_at: Date.now() } });
+      if (facts.pairing_event) await ctx.update({ facts: { pairing_event: 'connected', pairing_detail: null, pairing_hint: null, pairing_trace: null, pairing_at: Date.now() } });
       sessions.set(ctx.device.id, { stream, at: Date.now() });
       return stream;
     }

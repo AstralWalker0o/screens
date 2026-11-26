@@ -1,13 +1,14 @@
 import { useState } from 'react';
-import { Router, Plus, RotateCw, ArrowUpCircle, Ban, Terminal, Network, CircleCheck, CircleX, Server, Wifi, WifiOff, ScrollText, RefreshCw } from 'lucide-react';
+import { Router, Plus, RotateCw, ArrowUpCircle, Ban, Terminal, CircleCheck, CircleX, Server, Wifi, ScrollText, RefreshCw } from 'lucide-react';
 import type { EnrollResult, SiteDetail } from '../../../shared/types';
 import { api, ApiError } from '../../api';
 import { act, invalidate, useQuery } from '../../lib/query';
 import { cmpVersion, fmtBytes, fmtDuration, fmtNum, fmtPct, relTime } from '../../lib/format';
-import { Badge, Button, Callout, Card, CardBody, CardHeader, CopyButton, EmptyState, IconButton, KeyVal, RelTime, SkeletonRows, StatusText, TableWrap, td, th, cn } from '../../components/ui';
+import { Badge, Button, Callout, Card, CardBody, CardHeader, CopyButton, EmptyState, IconButton, KeyVal, RelTime, SkeletonRows, cn } from '../../components/ui';
 import { ConfirmDialog } from '../../components/overlay';
 import { Meter } from '../../components/charts';
 import { GatewayBadge } from '../../components/status';
+import { NetworkInterfaces } from './NetworkInterfaces';
 
 export function GatewayTab({ site }: { site: SiteDetail }) {
   const has = site.gateway && site.gateway.status !== 'revoked';
@@ -64,7 +65,7 @@ function AddGateway({ site, result, setResult, revoked }: { site: SiteDetail; re
           <ol className="space-y-4 text-sm">
             {[
               ['Get a Linux machine at the site', 'A small virtual machine on the site’s server or a mini PC is perfect. Ubuntu 24.04 or Debian 12 work well. It needs about 1 GB of memory and must stay on.'],
-              ['Connect it to every network you want covered', 'Run this on the Linux VM at the site. The VM needs a network card on each VLAN you want covered — for example your main network and your TV/IoT network — so it can answer DNS, find devices and relay mDNS on each one.'],
+              ['Connect it to every network you want covered', 'The gateway needs to reach each VLAN with TVs, boxes or speakers. Start with one network; once it’s online you can add the other VLANs from this Gateway tab (Network interfaces → Add network), either as tagged VLANs on its port or as extra network devices on the VM.'],
               ['Paste the command', 'Open a terminal on the VM (or SSH in) and paste the command above. It installs Docker if needed and starts the Screens gateway. It takes about a minute.'],
               ['Point DNS at the gateway', 'In your router’s DHCP settings, hand out the gateway’s IP address as the DNS server on each VLAN. Devices pick it up the next time they reconnect.'],
             ].map(([t, d], i) => (
@@ -207,27 +208,7 @@ function GatewayStatus({ site }: { site: SiteDetail }) {
         </Card>
       </div>
 
-      <Card>
-        <CardHeader title="Network interfaces" icon={Network} subtitle="One per VLAN the gateway is connected to." />
-        <TableWrap>
-          <table className="w-full min-w-[560px] text-sm">
-            <thead className="border-y border-line bg-surface-2/60">
-              <tr><th className={th}>Name</th><th className={th}>Addresses</th><th className={th}>MAC</th><th className={th}>Link</th><th className={th}>Multicast</th></tr>
-            </thead>
-            <tbody className="divide-y divide-line">
-              {(g.interfaces ?? []).map((i) => (
-                <tr key={i.name}>
-                  <td className={cn(td, 'font-mono text-[13px] font-medium')}>{i.name}</td>
-                  <td className={cn(td, 'font-mono text-[13px]')}>{i.addrs.join(', ')}</td>
-                  <td className={cn(td, 'font-mono text-xs text-muted')}>{i.mac}</td>
-                  <td className={td}>{i.up ? <StatusText tone="ok" icon={Wifi}>Up</StatusText> : <StatusText tone="crit" icon={WifiOff}>Down</StatusText>}</td>
-                  <td className={td}>{i.multicast ? <StatusText tone="ok" icon={CircleCheck}>Yes</StatusText> : <StatusText tone="neutral" icon={CircleX}>No</StatusText>}</td>
-                </tr>
-              ))}
-            </tbody>
-          </table>
-        </TableWrap>
-      </Card>
+      <NetworkInterfaces site={site} />
 
       <Card>
         <CardHeader title="Recent gateway log" icon={ScrollText} actions={<IconButton icon={RefreshCw} label="Refresh log" size="sm" loading={q.fetching} onClick={() => q.refetch()} />} />

@@ -44,6 +44,7 @@ func FromEnv() Env {
 type Persisted struct {
 	DNS       json.RawMessage  `json:"dns,omitempty"`
 	MDNS      json.RawMessage  `json:"mdns,omitempty"`
+	Net       json.RawMessage  `json:"net,omitempty"`
 	Telemetry *proto.Telemetry `json:"telemetry,omitempty"`
 }
 

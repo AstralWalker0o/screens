@@ -24,6 +24,16 @@ func (a *Agent) registerOps() {
 	r.Register("dns.configure", func(ctx context.Context, raw json.RawMessage) (any, error) {
 		return a.applyDNS(raw, true)
 	})
+	r.Register("net.configure", func(ctx context.Context, raw json.RawMessage) (any, error) {
+		res, err := a.applyNet(raw, true)
+		if err != nil {
+			return nil, err
+		}
+		return map[string]any{"interfaces": res.Interfaces, "errors": res.Errors, "host": netx.Describe()}, nil
+	})
+	r.Register("net.status", func(ctx context.Context, raw json.RawMessage) (any, error) {
+		return map[string]any{"interfaces": a.net.Status(), "host": netx.Describe()}, nil
+	})
 	r.Register("dns.stats", func(ctx context.Context, raw json.RawMessage) (any, error) {
 		return a.dns.Stats(), nil
 	})

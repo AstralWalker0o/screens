@@ -28,6 +28,8 @@ Errors are `{ "error": "code", "message": "human text" }` with a 4xx/5xx status.
 | POST | `/api/sites/:id/guest-reset` | `{device_ids?: string[]}` | `{results: {device_id, ok, detail}[]}` |
 | GET | `/api/sites/:id/mdns` | | `{config: MdnsConfig, status: MdnsStatus \| null, interfaces: GatewayInterface[]}` |
 | PUT | `/api/sites/:id/mdns` | `MdnsConfig` | `{ok}` |
+| GET | `/api/sites/:id/network` | | `NetworkState`: `{supported, gateway_online, config: NetConfig, status: NetIfaceStatus[], errors, host: GatewayInterface[], updated_at}` (asks the gateway live when online) |
+| PUT | `/api/sites/:id/network` | `NetConfig` `{interfaces: [{kind: "vlan"\|"existing", parent?, vlan?, name?, mode: "dhcp"\|"static", address?, label?}]}` | `NetworkState` after the gateway applied it (saved and applied on reconnect if the gateway is offline) |
 | GET | `/api/sites/:id/dns/log?device_id=&q=&action=&limit=200&before=` | | `DnsLogEntry[]` (newest first) |
 | GET | `/api/sites/:id/dns/summary?hours=24` | | `DnsSummary` |
 | WS | `/api/sites/:id/live` | | stream of `LiveEvent` JSON frames |
