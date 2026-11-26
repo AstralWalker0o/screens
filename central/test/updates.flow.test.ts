@@ -299,6 +299,21 @@ describe('staged rollout on a site', () => {
     expect(boxes.map((b) => b.vc)).toEqual([2, 2, 2]);
   });
 
+  it('a rollout waiting on a busy box doesn’t hold up the next one', async () => {
+    const { env } = makeEnv();
+    const builds = await seedSite(env, BOXES, ['v2-k1-universal.apk']);
+    const boxes = [box('10.0.0.1', { awake: true, fg: 'org.example.player' }), box('10.0.0.2'), box('10.0.0.3')];
+    const { hub, settle } = fakeHub(env, boxes, builds);
+    const runner = new UpdateRunner(hub);
+    await runner.probe(); await settle();
+    await runner.updateNow({ package: PKG, device_ids: ['dev_a'] }, 'owner@test'); await settle();
+    await runner.updateNow({ package: PKG, device_ids: ['dev_b'] }, 'owner@test'); await settle();
+    const [first, second] = await rollouts(env);
+    expect(first.devices[0]).toMatchObject({ status: 'waiting', detail: expect.stringMatching(/org\.example\.player is open/) });
+    expect(second.status).toBe('done');
+    expect(boxes.map((b) => b.vc)).toEqual([1, 2, 1]);
+  });
+
   it('plans automatic updates only inside the site’s maintenance window, once per version', async () => {
     const { env } = makeEnv();
     const builds = await seedSite(env, BOXES, ['v2-k1-universal.apk']);

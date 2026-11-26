@@ -65,16 +65,22 @@ export class UpdateRunner {
   private async run() {
     const started = now();
     await this.probeDue(started);
-    // Keep going while there's quick progress (skips, finished rollouts), within a time budget.
+    // One step at a time across the site's active rollouts (a rollout whose boxes are all waiting doesn't block
+    // the others), while there's progress, within a time budget.
     for (let i = 0; i < 12 && now() - started < 8 * 60_000; i++) {
-      let r = await this.nextRollout();
-      if (!r && now() - this.lastPlan >= PLAN_EVERY) {
+      let moved = await this.stepAny();
+      if (!moved && now() - this.lastPlan >= PLAN_EVERY) {
         this.lastPlan = now();
         await this.planAuto(now());
-        r = await this.nextRollout();
+        moved = await this.stepAny();
       }
-      if (!r || !(await this.step(r))) break;
+      if (!moved) break;
     }
+  }
+
+  private async stepAny(): Promise<boolean> {
+    for (const r of await this.activeRollouts()) if (await this.step(r)) return true;
+    return false;
   }
 
   // ------------------------------------------------------------------------------------------ reading boxes
@@ -95,7 +101,12 @@ export class UpdateRunner {
   async probeDevice(row: Row) {
     const t = now();
     let res;
-    try { res = parseProbe((await this.sh(row)(PROBE_CMD, 90_000)).stdout); } catch (e: any) {
+    try {
+      const out = (await this.sh(row)(PROBE_CMD, 90_000)).stdout;
+      // Only a complete answer replaces what we know (a cut-off one would look like "no apps").
+      if (!/^@@END$/m.test(out) || !/^@@PKGS$/m.test(out)) throw new Error('incomplete answer from the box');
+      res = parseProbe(out);
+    } catch (e: any) {
       // Try again in 15 minutes rather than every minute.
       await this.env.DB.prepare(`INSERT INTO update_devices (device_id, probed_at) VALUES (?, ?) ON CONFLICT(device_id) DO UPDATE SET probed_at = excluded.probed_at`)
         .bind(row.id, t - PROBE_EVERY + 15 * 60_000).run();
@@ -232,10 +243,10 @@ export class UpdateRunner {
 
   // ------------------------------------------------------------------------------------------ running rollouts
 
-  private async nextRollout(): Promise<UpdateRollout | null> {
-    const row = await this.env.DB.prepare(`SELECT * FROM update_rollouts WHERE site_id = ? AND status IN ('canary','rolling')
-      ORDER BY CASE trigger WHEN 'manual' THEN 0 ELSE 1 END, created_at LIMIT 1`).bind(this.siteId).first<Row>();
-    return row ? toRollout(row) : null;
+  /** Manual rollouts first, then oldest first. */
+  private async activeRollouts(): Promise<UpdateRollout[]> {
+    return (await this.env.DB.prepare(`SELECT * FROM update_rollouts WHERE site_id = ? AND status IN ('canary','rolling')
+      ORDER BY CASE trigger WHEN 'manual' THEN 0 ELSE 1 END, created_at LIMIT 20`).bind(this.siteId).all<Row>()).results.map(toRollout);
   }
 
   /** Save progress without undoing a cancel that happened while a box was installing. */
