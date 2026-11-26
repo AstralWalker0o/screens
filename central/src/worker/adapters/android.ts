@@ -2,6 +2,9 @@ import { signAgentUrl } from '../lib/crypto';
 import { parseJson, assertPackage, shellQuote, sleep } from '../lib/util';
 import type { Adapter, AdapterCtx, KeyName } from './types';
 import { AdapterError, requireKey } from './types';
+import { applyLauncherConfig, readLauncherStatus } from './launcher';
+
+export { parseBroadcast } from './launcher';
 
 export const ANDROID_KEYCODES: Record<KeyName, number> = {
   UP: 19, DOWN: 20, LEFT: 21, RIGHT: 22, OK: 23, BACK: 4, HOME: 3, MENU: 82, PLAY_PAUSE: 85, PLAY: 126, PAUSE: 127,
@@ -325,7 +328,7 @@ export const android: Adapter = {
         // A freshly installed app is "stopped" and ignores broadcasts until launched once.
         await sh(ctx, `am start -n ${LAUNCHER_PKG}/.LauncherActivity`).catch(() => undefined);
         await sleep(1500);
-        const cfg = await launcherConfigure(ctx, String(args.config_b64 ?? ''));
+        const cfg = await applyLauncherConfig(ctx, args);
         await sh(ctx, `cmd package set-home-activity ${LAUNCHER_PKG}/.LauncherActivity 2>&1`).catch(() => undefined);
         if (args.force_home) await sh(ctx, STOCK_LAUNCHERS.map((p) => `pm disable-user --user 0 ${p} 2>/dev/null`).join('; ')).catch(() => undefined);
         await sh(ctx, 'input keyevent 3').catch(() => undefined);
@@ -334,10 +337,19 @@ export const android: Adapter = {
         return { ok: true, config: cfg, status: st };
       }
       case 'launcher_config': {
-        const cfg = await launcherConfigure(ctx, String(args.config_b64 ?? ''));
+        const cfg = await applyLauncherConfig(ctx, args);
         const st = await launcherStatus(ctx);
         await ctx.update({ facts: { launcher: st } });
-        return { ok: cfg.ok, detail: cfg.detail, status: st };
+        return { ok: cfg.ok, detail: cfg.detail, config: cfg, status: st };
+      }
+      case 'launcher_home': {
+        // "Make it the home screen" without reinstalling (docs/LAUNCHER.md).
+        const r = await sh(ctx, `cmd package set-home-activity ${LAUNCHER_PKG}/.LauncherActivity 2>&1`);
+        if (args.force_home) await sh(ctx, STOCK_LAUNCHERS.map((p) => `pm disable-user --user 0 ${p} 2>/dev/null`).join('; ')).catch(() => undefined);
+        await sh(ctx, 'input keyevent 3').catch(() => undefined);
+        const st = await launcherStatus(ctx);
+        await ctx.update({ facts: { launcher: st } });
+        return { ok: st.installed && st.is_home !== false, detail: st.installed ? (st.is_home ? undefined : r.stdout.trim().slice(-200) || 'Android did not accept the Screens Launcher as home') : 'The Screens Launcher is not installed', status: st };
       }
       case 'launcher_status': {
         const st = await launcherStatus(ctx);
@@ -371,28 +383,8 @@ export const PRIVACY_PERMISSIONS: Record<string, { permission: string; op: strin
 };
 const STOCK_LAUNCHERS = ['com.google.android.tvlauncher', 'com.google.android.apps.tv.launcherx'];
 
-/** Parse `am broadcast` output: Broadcast completed: result=1, data="ok:..." */
-export function parseBroadcast(out: string): { result: number | null; data: string | null } {
-  const m = out.match(/Broadcast completed: result=(-?\d+)(?:, data="((?:[^"\\]|\\.)*)")?/);
-  return { result: m ? Number(m[1]) : null, data: m?.[2] != null ? m[2].replace(/\\"/g, '"').replace(/\\\\/g, '\\') : null };
-}
-
-async function launcherConfigure(ctx: AdapterCtx, configB64: string) {
-  if (!/^[A-Za-z0-9+/=]+$/.test(configB64) || configB64.length > 90_000) throw new AdapterError('bad_args', 'Invalid launcher config');
-  const r = await sh(ctx, `am broadcast --include-stopped-packages -a ${LAUNCHER_PKG}.CONFIG -n ${LAUNCHER_PKG}/.ConfigReceiver --es config_b64 ${configB64}`);
-  const b = parseBroadcast(r.stdout);
-  if (b.result === 1 && b.data?.startsWith('ok:')) return { ok: true, sha: b.data.slice(3) };
-  return { ok: false, detail: b.data ?? (r.stdout.trim().slice(-200) || 'No answer from the Screens Launcher (is it installed?)') };
-}
-
 async function launcherStatus(ctx: AdapterCtx) {
-  const r = await sh(ctx, `am broadcast --include-stopped-packages -a ${LAUNCHER_PKG}.STATUS -n ${LAUNCHER_PKG}/.ConfigReceiver`);
-  const b = parseBroadcast(r.stdout);
-  if (b.result === 1 && b.data?.startsWith('status:')) {
-    const st = parseJson<any>(b.data.slice(7), {});
-    return { installed: true, version: st.version ?? null, config_sha: st.config_sha ?? null, is_home: !!st.is_home, checked_at: Date.now() };
-  }
-  return { installed: false, checked_at: Date.now() };
+  return readLauncherStatus(ctx);
 }
 
 async function listApps(ctx: AdapterCtx) {

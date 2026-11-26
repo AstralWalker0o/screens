@@ -4,7 +4,7 @@ import type { KioskConfig, SiteDetail, WelcomeConfig } from '../../../shared/typ
 import { api } from '../../api';
 import { act, setQueryData, useQuery } from '../../lib/query';
 import { useElementWidth } from '../../lib/hooks';
-import { Badge, Button, Callout, Card, CardBody, CardHeader, IconButton, SectionLabel, StatusText, cn } from '../../components/ui';
+import { Badge, Button, ButtonLink, Callout, Card, CardBody, CardHeader, IconButton, SectionLabel, StatusText, cn } from '../../components/ui';
 import { Checkbox, Field, Input, SearchInput, Select, Textarea, Toggle } from '../../components/forms';
 import { AppIcon } from '../../components/AppLauncher';
 import { LauncherActions, LauncherStatusText } from '../../components/Launcher';
@@ -40,6 +40,7 @@ export function LauncherDevicesCard({ site }: { site: SiteDetail }) {
         title="Screens Launcher on each box"
         icon={House}
         subtitle="A simple home screen for Android TV boxes that shows the welcome screen and only the apps you allow. It has no internet access of its own — Screens configures it over the local network."
+        actions={androids.length > 0 && <ButtonLink size="sm" icon={LayoutGrid} to={`/sites/${site.id}/home-screen`}>Design the home screen</ButtonLink>}
       />
       <CardBody>
         {androids.length === 0 ? (

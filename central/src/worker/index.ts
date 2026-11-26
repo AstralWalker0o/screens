@@ -3,6 +3,7 @@ import { AdapterError } from './adapters/types';
 import { agentRoutes, installRoutes } from './agent/routes';
 import { deviceRoutes } from './api/devices';
 import { dnsRoutes } from './api/dns';
+import { launcherRoutes } from './api/launcher';
 import { automationSites, opsRoutes } from './api/ops';
 import type { AppEnv } from './api/shared';
 import { siteRoutes } from './api/sites';
@@ -48,6 +49,7 @@ app.route('/api', siteRoutes);
 app.route('/api', deviceRoutes);
 app.route('/api', dnsRoutes);
 app.route('/api', opsRoutes);
+app.route('/api', launcherRoutes);
 app.all('/api/*', (c) => c.json({ error: 'not_found', message: 'No such API endpoint' }, 404));
 
 async function scheduled(controller: ScheduledController, env: Env, ctx: ExecutionContext) {

@@ -16,6 +16,7 @@ import { startMockMirror } from './mirror';
 import type { MirrorConnection, MirrorHandlers, MirrorParams } from '../api';
 import { between, hex } from './rand';
 import { sonosMock, sonosOverview } from './sonos';
+import { launcherMock } from './launcher';
 
 const clone = <T,>(v: T): T => (v === undefined ? v : structuredClone(v));
 const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
@@ -482,14 +483,15 @@ async function command(d: Device, cmd: string, args: Record<string, unknown> = {
     }
     case 'launcher_install': {
       await sleep(2200);
-      d.facts.launcher = { installed: true, version: '1.0.2', config_sha: hex(6), is_home: true, checked_at: Date.now() };
-      return job({ status: d.facts.launcher });
+      return job({ status: await launcher.command(d, cmd) });
     }
     case 'launcher_config':
       if (!(d.facts.launcher as { installed?: boolean } | undefined)?.installed) throw err(409, 'launcher_missing', `The Screens Launcher isn’t installed on ${d.name}. Install it first.`);
       await sleep(600);
-      d.facts.launcher = { ...(d.facts.launcher as object), config_sha: hex(6), checked_at: Date.now() };
-      return job({ status: d.facts.launcher });
+      return job({ status: await launcher.command(d, cmd) });
+    case 'launcher_home':
+      await sleep(500);
+      return job({ status: await launcher.command(d, cmd) });
     case 'launcher_status':
       return job({ status: d.facts.launcher ?? { installed: false, checked_at: Date.now() } });
     case 'launcher_remove':
@@ -993,6 +995,9 @@ on('PUT', '/api/settings', async (c) => {
   logAudit('settings.update', 'settings');
   return db.settings;
 });
+
+// Screens Launcher v2: home-screen layouts, pictures and rollout (./launcher).
+const launcher = launcherMock(on, db);
 
 export async function handle(method: string, path: string, body?: unknown): Promise<unknown> {
   const u = new URL(path, 'http://mock');
