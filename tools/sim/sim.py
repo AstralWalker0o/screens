@@ -22,6 +22,9 @@ def log(kind, **kw):
 class ThreadingHTTP(socketserver.ThreadingMixIn, http.server.HTTPServer):
     daemon_threads = True
     allow_reuse_address = True
+    def server_bind(self):  # skip HTTPServer's reverse-DNS lookup (hangs in an isolated netns)
+        socketserver.TCPServer.server_bind(self)
+        self.server_name, self.server_port = self.server_address[:2]
 
 # --------------------------------------------------------------------------- minimal websocket
 def ws_handshake(conn, headers):
@@ -291,7 +294,7 @@ def adbd(ip, dev):
                     svc = data.rstrip(b'\0').decode(errors='replace')
                     lid = next_id[0]; next_id[0] += 1
                     send(conn, A_OKAY, lid, a0)
-                    m = re.match(r"exec:cmd package 'install' -S (\d+)", svc) or re.match(r'exec:cmd package install -S (\d+)', svc)
+                    m = re.match(r"exec:cmd package '?install'?(?: \S+)*? -S (\d+)", svc)
                     if m:
                         streams[lid] = {'remote': a0, 'need': int(m.group(1)), 'got': 0, 'kind': 'install'}
                         log('android.install_start', ip=ip, size=int(m.group(1)))

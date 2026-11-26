@@ -199,6 +199,7 @@ export class SiteHub extends DurableObject<Env> {
       config: { dns, mdns, telemetry: { dns_batch_ms: 5000, metrics_ms: 60000, neighbors_ms: 300000 } },
     }));
     this.setKv('offline_since', null);
+    this.setKv('dns_refresh', true); // re-read DNS listener state once the welcome config has been applied
     await resolveAlert(this.env, `gw_offline:${this.siteId}`);
     this.broadcast({ type: 'gateway', status: 'online', gateway: { hostname: h.hostname, version: h.version } });
     this.ctx.waitUntil(this.fireEvent('gateway.online', {}));
@@ -214,8 +215,14 @@ export class SiteHub extends DurableObject<Env> {
   async pushDnsConfig(): Promise<boolean> {
     if (!this.online) return false;
     const cfg = await buildDnsConfig(this.env, this.siteId, this.origin);
-    await this.gw('dns.configure', cfg as unknown as Record<string, unknown>, 20_000);
+    const st = await this.gw<any>('dns.configure', cfg as unknown as Record<string, unknown>, 20_000);
     this.names = null;
+    // dns.configure answers with the live listener state; keep it on the gateway record for the dashboard.
+    const gwId = (this.agent()?.deserializeAttachment() as any)?.gateway_id;
+    if (gwId && st && Array.isArray(st.listening)) {
+      const dns = { listening: st.listening, dot_listening: st.dot_listening ?? [], policy_versions: st.policy_versions ?? {}, errors: st.errors ?? [] };
+      await this.env.DB.prepare("UPDATE gateways SET info = json_set(info, '$.dns', json(?)) WHERE id = ?").bind(JSON.stringify(dns), gwId).run();
+    }
     return true;
   }
 
@@ -787,6 +794,10 @@ export class SiteHub extends DurableObject<Env> {
           if (res.ok) await this.refreshDevice(id).catch(() => undefined);
           else await this.updateDevice(row, { status: 'pairing', facts: { pairing_detail: res.detail } });
         }));
+      }
+      if (this.online && this.kv<boolean>('dns_refresh', false)) {
+        this.setKv('dns_refresh', false);
+        await this.pushDnsConfig().catch(() => undefined);
       }
       if (this.online) {
         await this.probeDevices();

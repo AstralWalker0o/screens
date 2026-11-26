@@ -126,11 +126,14 @@ export async function compilePolicies(env: Env): Promise<{ policy: string; sha25
     const text = serializeRules(policy, rules);
     const gz = await gzip(text);
     const sha = await sha256Hex(gz);
-    const prev = await env.DB.prepare('SELECT sha256 FROM dns_policy_builds WHERE policy = ?').bind(policy).first<Row>();
+    const prev = await env.DB.prepare('SELECT sha256, r2_key FROM dns_policy_builds WHERE policy = ?').bind(policy).first<Row>();
     // The content hash ignores the build timestamp header so unchanged rule sets don't trigger re-downloads.
     const contentSha = await sha256Hex(text.slice(text.indexOf('\n') + 1));
     const prevContent = prev ? await env.DB.prepare("SELECT value FROM settings WHERE key = ?").bind(`policy_content_${policy}`).first<Row>() : null;
-    if (prev && prevContent && JSON.parse(prevContent.value) === contentSha) { out.push({ policy, sha256: prev.sha256, rules: rules.length, changed: false }); continue; }
+    if (prev && prevContent && JSON.parse(prevContent.value) === contentSha && (await env.FILES.head(prev.r2_key))) {
+      out.push({ policy, sha256: prev.sha256, rules: rules.length, changed: false });
+      continue;
+    }
     const key = `policies/${policy}/${sha}.gz`;
     await env.FILES.put(key, gz, { httpMetadata: { contentType: 'application/gzip' } });
     await env.DB.batch([
