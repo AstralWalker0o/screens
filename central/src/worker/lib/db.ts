@@ -158,7 +158,12 @@ export const DEFAULT_APP_SETTINGS: AppSettings = {
 export async function getAppSettings(env: Env): Promise<AppSettings> {
   const rows = await env.DB.prepare('SELECT key, value FROM settings').all<Row>();
   const out: any = { ...DEFAULT_APP_SETTINGS, dot_base_domain: env.DOT_BASE_DOMAIN || null };
-  for (const r of rows.results) out[r.key] = parseJson(r.value, r.value);
+  for (const r of rows.results) {
+    if (r.key === 'cf_dns_token') { out.cf_dns_token_set = true; continue; }
+    if (r.key.startsWith('policy_content_') || r.key === 'acme_account' || r.key === 'seeded_v1') continue;
+    out[r.key] = parseJson(r.value, r.value);
+  }
+  out.cf_dns_token_set = !!out.cf_dns_token_set || !!env.CF_API_TOKEN;
   return out as AppSettings;
 }
 

@@ -8,3 +8,4 @@ gateway/bin/
 gateway/dist/
 .DS_Store
 coverage/
+tools/sim/sim.log

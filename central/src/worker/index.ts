@@ -42,7 +42,7 @@ app.use('/api/*', async (c, next) => {
     if (origin && origin !== new URL(c.req.url).origin) throw new HttpError(403, 'bad_origin', 'Cross-origin request blocked');
   }
   await next();
-  c.header('Cache-Control', 'no-store');
+  if (c.res.status !== 101) { try { c.res.headers.set('Cache-Control', 'no-store'); } catch { /* immutable (proxied) response */ } }
 });
 app.route('/api', siteRoutes);
 app.route('/api', deviceRoutes);

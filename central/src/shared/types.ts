@@ -255,6 +255,10 @@ export interface AppSettings {
   default_policy: DnsPolicyName;
   dns_log_retention_days: number;
   agent_latest_version?: string | null;
+  /** True when a Cloudflare DNS-edit token is stored (needed for Android Private DNS certificates). */
+  cf_dns_token_set?: boolean;
+  /** Write-only: send to store/replace the token (never returned). Empty string removes it. */
+  cf_dns_token?: string;
 }
 
 export interface EnrollResult { token: string; expires_at: number; command: string; install_url: string }

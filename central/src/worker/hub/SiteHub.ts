@@ -508,13 +508,9 @@ export class SiteHub extends DurableObject<Env> {
     this.names = null;
     this.ctx.waitUntil(this.pushDnsConfig().catch(() => undefined));
     if (this.online) {
-      // Kick off pairing: shows the authorisation prompt on the TV. Don't block adoption on it.
-      this.ctx.waitUntil((async () => {
-        const row = await this.deviceRow(id);
-        const res = await adapterFor(input.kind).pair(this.makeCtx(row)).catch((e: any) => ({ ok: false, detail: e.message }));
-        if (res.ok) await this.refreshDevice(id).catch(() => undefined);
-        else await this.updateDevice(row, { status: 'pairing', facts: { pairing_detail: res.detail } });
-      })());
+      // Pairing shows an authorisation prompt on the TV and may wait ~30 s for the user; run it from the alarm.
+      this.setKv('pending_pairs', [...this.kv<string[]>('pending_pairs', []), id]);
+      await this.ctx.storage.setAlarm(now() + 500);
     }
     return toDevice(await this.deviceRow(id));
   }
@@ -746,6 +742,17 @@ export class SiteHub extends DurableObject<Env> {
     if (!siteOk) return; // site deleted: stop ticking
     const due = (k: string, every: number) => { const last = this.kv<number>(`last_${k}`, 0); if (t - last >= every) { this.setKv(`last_${k}`, t); return true; } return false; };
     try {
+      const pairs = this.kv<string[]>('pending_pairs', []);
+      if (pairs.length && this.online) {
+        this.setKv('pending_pairs', []);
+        await Promise.all(pairs.map(async (id) => {
+          const row = await this.deviceRow(id).catch(() => null);
+          if (!row) return;
+          const res = await adapterFor(row.kind).pair(this.makeCtx(row)).catch((e: any) => ({ ok: false, detail: e.message }));
+          if (res.ok) await this.refreshDevice(id).catch(() => undefined);
+          else await this.updateDevice(row, { status: 'pairing', facts: { pairing_detail: res.detail } });
+        }));
+      }
       if (this.online) {
         await this.probeDevices();
         if (due('refresh', 5 * 60_000)) await this.refreshAll();
@@ -805,7 +812,7 @@ export class SiteHub extends DurableObject<Env> {
   }
 
   private async refreshAll() {
-    const devices = (await this.env.DB.prepare("SELECT id FROM devices WHERE site_id = ? AND status IN ('online','standby','unauthorized','pairing') AND kind IN ('android','sonos','lg')").bind(this.siteId).all<Row>()).results;
+    const devices = (await this.env.DB.prepare("SELECT id FROM devices WHERE site_id = ? AND status IN ('online','standby','unauthorized','pairing') AND kind IN ('android','samsung','sonos','lg')").bind(this.siteId).all<Row>()).results;
     await Promise.all(devices.map((d) => this.refreshDevice(d.id).catch(() => undefined)));
   }
 
@@ -835,7 +842,11 @@ export class SiteHub extends DurableObject<Env> {
         }
       }
       for (const c of chunk(stmts, 80)) await this.env.DB.batch(c);
-      for (const r of daily) this.sql.exec('UPDATE agg_daily SET fq = ?, fb = ?, fw = ?, dirty = 0 WHERE day = ? AND device_id = ? AND domain = ? AND q = ?', r.q, r.b, r.w, r.day, r.device_id, r.domain, r.q);
+      for (const r of daily) {
+        // Record what was sent (so domain deltas never double count), and only clear dirty if nothing arrived meanwhile.
+        this.sql.exec('UPDATE agg_daily SET fq = ?, fb = ?, fw = ? WHERE day = ? AND device_id = ? AND domain = ?', r.q, r.b, r.w, r.day, r.device_id, r.domain);
+        this.sql.exec('UPDATE agg_daily SET dirty = 0 WHERE day = ? AND device_id = ? AND domain = ? AND q = ?', r.day, r.device_id, r.domain, r.q);
+      }
     }
     const hourly = this.sql.exec('SELECT * FROM agg_hourly WHERE dirty = 1 LIMIT 500').toArray();
     const hs = hourly.map((r) => this.env.DB.prepare(`INSERT INTO dns_hourly (hour, site_id, device_id, queries, blocked, would_block, cats) VALUES (?,?,?,?,?,?,?)

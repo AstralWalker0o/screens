@@ -4,21 +4,26 @@
   "main": "src/worker/index.ts",
   "compatibility_date": "2026-11-01",
   "compatibility_flags": ["nodejs_compat"],
+  // Dashboard lives on workers.dev behind Cloudflare Access. Version preview URLs would bypass Access, so they stay off.
+  "workers_dev": true,
+  "preview_urls": false,
   "assets": {
     "not_found_handling": "single-page-application",
     "run_worker_first": ["/api/*", "/agent/*", "/install/*"]
   },
   "d1_databases": [
-    { "binding": "DB", "database_name": "screens", "database_id": "00000000-0000-0000-0000-000000000000", "migrations_dir": "migrations" }
+    { "binding": "DB", "database_name": "screens", "database_id": "a3f5556b-40f2-4266-a4a8-ef0fcf1bde3e", "migrations_dir": "migrations" }
   ],
-  "r2_buckets": [{ "binding": "FILES", "bucket_name": "screens-files" }],
+  "r2_buckets": [{ "binding": "FILES", "bucket_name": "screens-store" }],
   "durable_objects": { "bindings": [{ "name": "SITE_HUB", "class_name": "SiteHub" }] },
   "migrations": [{ "tag": "v1", "new_sqlite_classes": ["SiteHub"] }],
   "triggers": { "crons": ["* * * * *"] },
   "vars": {
-    "ACCESS_TEAM_DOMAIN": "",
-    "ACCESS_AUD": "",
-    "DOT_BASE_DOMAIN": "dns.screens.supercluster.au"
+    "ACCESS_TEAM_DOMAIN": "https://internik.cloudflareaccess.com",
+    "ACCESS_AUD": "5ec7aca8fef0938226564afe666cacce9435c1cdea8dbe7f77b38b649e82e6d9",
+    "PUBLIC_URL": "https://screens.nebula-technologies.workers.dev",
+    "DOT_BASE_DOMAIN": "dns.screens.supercluster.au",
+    "CF_ZONE_ID": "56b2088d6a9244a616f6c74c033024f4"
   },
   "observability": { "enabled": true }
 }

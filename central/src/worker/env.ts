@@ -16,7 +16,7 @@ export interface Env {
   SIGNING_SECRET: string;       // HMAC for signed agent URLs
   SECRETS_KEY: string;          // base64 32-byte AES-GCM key for device secrets
   CF_API_TOKEN?: string;        // runtime token: DNS edit on the DoT zone (optional)
-  CF_ZONE_ID?: string;          // zone id for DOT_BASE_DOMAIN
+  CF_ZONE_ID?: string;          // zone id for DOT_BASE_DOMAIN (var)
   ACME_DIRECTORY?: string;      // override (e.g. Let's Encrypt staging)
   DEV_AUTH?: string;            // "1" = skip Access verification (local dev only)
 }
