@@ -66,6 +66,10 @@ SIM=$!
 cd "$ROOT/central"
 [ -d node_modules ] || npm ci
 [ -f .dev.vars ] || printf 'DEV_AUTH=1\nSIGNING_SECRET=dev-signing-secret\nSECRETS_KEY=%s\n' "$(head -c 32 /dev/urandom | base64)" > .dev.vars
+# Every run starts from a clean local database/bucket and a freshly started Worker (current code, no leftovers
+# such as older launcher APKs in the library deciding which build "Install launcher" picks).
+pkill -f "wrangler dev -c wrangler.e2e.jsonc" 2>/dev/null || true; sleep 1
+rm -rf .wrangler/e2e
 npx wrangler d1 migrations apply screens --local -c wrangler.e2e.jsonc --persist-to .wrangler/e2e >/dev/null
 if ! curl -sf --noproxy '*' http://127.0.0.1:8787/healthz >/dev/null; then
   npx wrangler dev -c wrangler.e2e.jsonc --persist-to .wrangler/e2e --port 8787 --ip 127.0.0.1 --test-scheduled > /tmp/screens-e2e-wrangler.log 2>&1 &

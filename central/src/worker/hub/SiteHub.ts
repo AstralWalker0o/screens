@@ -464,7 +464,11 @@ export class SiteHub extends DurableObject<Env> {
       switch (row.kind) {
         case 'android': {
           const serial = `${ip}:${row.port || 5555}`;
-          const c = await this.gwRaw<{ state: string }>('adb.connect', { serial }, 15_000);
+          let c = await this.gwRaw<{ state: string }>('adb.connect', { serial }, 15_000).catch(() => ({ state: 'error' }));
+          if (c.state !== 'device' && c.state !== 'unauthorized') { // the adb server may still be busy with the old address
+            await sleep(1_500);
+            c = await this.gwRaw<{ state: string }>('adb.connect', { serial }, 15_000);
+          }
           if (c.state !== 'device') return false; // our adb key is authorised per key, not per IP: same box stays authorised
           const r = await this.gwRaw<{ stdout: string }>('adb.shell', { serial, cmd: 'getprop ro.serialno', timeout_ms: 8_000 }, 13_000);
           const sn = r.stdout.trim();
@@ -513,8 +517,14 @@ export class SiteHub extends DurableObject<Env> {
 
   private async verifyMoveNow(id: string, candidates: string[], why: string, strict: boolean): Promise<string | null> {
     const row = await this.deviceRow(id);
-    const ips = [...new Set(candidates)].filter((ip) => ip !== row.ip && isPrivateIPv4(ip)).slice(0, 24);
+    // Addresses no other device is known on come first; another device's current address is the least likely.
+    const taken = new Set((await this.env.DB.prepare('SELECT ip FROM devices WHERE site_id = ? AND id != ? AND ip IS NOT NULL').bind(this.siteId, id).all<Row>()).results.map((r) => r.ip as string));
+    const ips = [...new Set(candidates)].filter((ip) => ip !== row.ip && isPrivateIPv4(ip))
+      .sort((a, b) => Number(taken.has(a)) - Number(taken.has(b))).slice(0, 24);
     if (!ips.length) return null;
+    // A stuck connection to the old address can block the adb server: drop it before probing.
+    if (row.kind === 'android' && row.ip) await this.gwRaw('adb.disconnect', { serial: `${row.ip}:${row.port || 5555}` }, 10_000).catch(() => undefined);
+    const checked: Record<string, boolean | null> = {};
     // A MAC shared by several addresses or devices (Wi-Fi extenders in MAC-NAT mode, bridges, the test LAN)
     // proves nothing: then the device must positively identify itself.
     const mac = normMac(row.mac);
@@ -522,11 +532,13 @@ export class SiteHub extends DurableObject<Env> {
     const ambiguous = strict || ips.length > 1 || Number(sameMac) > 1 || !mac;
     for (const ip of ips) {
       const same = await this.identityAt(row, ip);
+      checked[ip] = same;
       if (same === true || (same === null && !ambiguous)) {
         await this.moveDevice(row, ip, same ? 'identity verified' : 'MAC address', why);
         return ip;
       }
     }
+    this.diag('info', 'locate', `${row.name}: no candidate proved to be this device (${why})`, { device_id: id, ambiguous, checked });
     return null;
   }
 
