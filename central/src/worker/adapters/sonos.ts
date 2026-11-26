@@ -101,13 +101,18 @@ export const sonos: Adapter = {
     let nowPlaying: Record<string, unknown> = {};
     try {
       const ip = await coordinatorIp(ctx);
-      const [ti, pi, vol, mute, members] = await Promise.all([
+      const [ti, pi, vol, mute, members, led] = await Promise.all([
         soap(ctx, ip, 'AVTransport', 'GetTransportInfo', { InstanceID: 0 }),
         soap(ctx, ip, 'AVTransport', 'GetPositionInfo', { InstanceID: 0 }),
         soap(ctx, ctx.device.ip, 'RenderingControl', 'GetVolume', { InstanceID: 0, Channel: 'Master' }),
         soap(ctx, ctx.device.ip, 'RenderingControl', 'GetMute', { InstanceID: 0, Channel: 'Master' }),
         topology(ctx),
+        soap(ctx, ctx.device.ip, 'DeviceProperties', 'GetLEDState', {}).catch(() => ''),
       ]);
+      facts.led = led ? xmlTag(led, 'CurrentLEDState') === 'On' : null;
+      const dur = xmlTag(pi, 'TrackDuration'), rel = xmlTag(pi, 'RelTime');
+      const secs = (t: string | null) => (t && /^\d+:\d{2}:\d{2}$/.test(t) ? t.split(':').reduce((a, x) => a * 60 + Number(x), 0) : null);
+      facts.position = { elapsed_s: secs(rel), duration_s: secs(dur) };
       const me = members.find((m) => m.uuid === uuid);
       nowPlaying = {
         state: xmlTag(ti, 'CurrentTransportState'), ...parseDidl(xmlTag(pi, 'TrackMetaData')),
@@ -177,6 +182,7 @@ export const sonos: Adapter = {
       }
       case 'led': {
         await soap(ctx, ctx.device.ip, 'DeviceProperties', 'SetLEDState', { DesiredLEDState: args.on === false ? 'Off' : 'On' });
+        await ctx.update({ facts: { led: args.on !== false } });
         return { ok: true };
       }
       case 'power_off': {

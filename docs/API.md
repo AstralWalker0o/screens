@@ -23,6 +23,7 @@ Errors are `{ "error": "code", "message": "human text" }` with a 4xx/5xx status.
 | GET | `/api/sites/:id/discovered` | | `Discovered[]` |
 | POST | `/api/sites/:id/adopt` | `{ip, kind, name, room?, port?}` | `Device` |
 | POST | `/api/sites/:id/discovered/:ip/ignore` | | `{ok}` |
+| GET | `/api/sites/:id/apps` | | `{package, label, system, category, risk, devices, kinds[]}[]`, the union of apps on the site's devices |
 | POST | `/api/sites/:id/guest-reset` | `{device_ids?: string[]}` | `{results: {device_id, ok, detail}[]}` |
 | GET | `/api/sites/:id/mdns` | | `{config: MdnsConfig, status: MdnsStatus \| null, interfaces: GatewayInterface[]}` |
 | PUT | `/api/sites/:id/mdns` | `MdnsConfig` | `{ok}` |
@@ -34,7 +35,7 @@ Errors are `{ "error": "code", "message": "human text" }` with a 4xx/5xx status.
 | PATCH | `/api/devices/:id` | `{name, room, tags, ip, port, dns_mode, dns_policy, dns_allow, dns_block}` | `Device` |
 | DELETE | `/api/devices/:id` | | `{ok}` |
 | POST | `/api/devices/:id/command` | `CommandRequest` | `CommandResult` |
-| POST | `/api/devices/bulk` | `BulkCommandRequest` `{device_ids, command, args}` (no `shell`) | `BulkCommandResult` |
+| POST | `/api/devices/bulk` | `BulkCommandRequest` `{device_ids, command, args}` (no `shell`). The pseudo-command `dns_mode` with `{mode}` updates DNS mode for all of them. | `BulkCommandResult` |
 | GET | `/api/devices/:id/apps` | | `DeviceApp[]` (cached inventory; `command: "apps"` refreshes) |
 | GET | `/api/devices/:id/privacy` | | `DevicePrivacy` |
 | PUT | `/api/devices/:id/privacy/checklist` | `{key, done}` | `{ok}` |

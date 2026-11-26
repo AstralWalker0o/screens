@@ -90,6 +90,17 @@ deviceRoutes.post('/devices/bulk', async (c) => {
   if (!ids.length) throw new HttpError(400, 'bad_request', 'device_ids required');
   if (typeof b.command !== 'string' || !/^[a-z_]{2,32}$/.test(b.command)) throw new HttpError(400, 'bad_request', 'command required');
   if (b.command === 'shell') throw new HttpError(400, 'bad_request', 'Shell commands can only be run on one device at a time');
+  if (b.command === 'dns_mode') {
+    // Pseudo-command: a fleet-wide settings change, not a device action.
+    const mode = String(b.args?.mode ?? '');
+    if (!['enforce', 'monitor', 'off', 'bypass'].includes(mode)) throw new HttpError(400, 'bad_request', 'args.mode must be enforce, monitor, off or bypass');
+    const rows = (await c.env.DB.prepare(`SELECT id, site_id, name FROM devices WHERE id IN (${ids.map(() => '?').join(',')})`).bind(...ids).all<Row>()).results;
+    await c.env.DB.batch(rows.map((d) => c.env.DB.prepare('UPDATE devices SET dns_mode = ?, monitor_until = NULL, updated_at = ? WHERE id = ?').bind(mode, now(), d.id)));
+    const origin = originOf(c.req.raw, c.env);
+    c.executionCtx.waitUntil(Promise.all([...new Set(rows.map((d) => d.site_id))].map((sid) => hub(c.env, sid, origin, 'pushDnsConfig').catch(() => undefined))));
+    await audit(c.env, actorOf(c), 'device.bulk', { details: { command: 'dns_mode', mode, devices: rows.length } });
+    return c.json({ results: rows.map((d) => ({ device_id: d.id, name: d.name, ok: true })) });
+  }
   const rows = (await c.env.DB.prepare(`SELECT id, site_id, name FROM devices WHERE id IN (${ids.map(() => '?').join(',')})`).bind(...ids).all<Row>()).results;
   const origin = originOf(c.req.raw, c.env);
   const actor = actorOf(c);

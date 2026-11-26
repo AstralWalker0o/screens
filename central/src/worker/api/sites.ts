@@ -287,6 +287,15 @@ siteRoutes.post('/sites/:id/guest-reset', async (c) => {
   return c.json(await hub(c.env, c.req.param('id'), originOf(c.req.raw, c.env), 'guestReset', b.device_ids, actorOf(c)));
 });
 
+/** Every app seen on the site's Android/Samsung/LG devices (for kiosk/guest pickers). */
+siteRoutes.get('/sites/:id/apps', async (c) => {
+  const rows = await c.env.DB.prepare(`SELECT a.package, max(coalesce(a.label, k.label)) label, min(a.system) system, max(k.category) category, max(k.risk) risk,
+      count(DISTINCT a.device_id) devices, group_concat(DISTINCT d.kind) kinds
+    FROM device_apps a JOIN devices d ON d.id = a.device_id LEFT JOIN app_catalog k ON k.package = a.package
+    WHERE d.site_id = ? GROUP BY a.package ORDER BY min(a.system), label`).bind(c.req.param('id')).all<Row>();
+  return c.json(rows.results.map((r) => ({ package: r.package, label: r.label, system: !!r.system, category: r.category, risk: r.risk, devices: r.devices, kinds: String(r.kinds ?? '').split(',') })));
+});
+
 // ---------------------------------------------------------------- mDNS reflector
 siteRoutes.get('/sites/:id/mdns', async (c) => {
   const id = c.req.param('id');

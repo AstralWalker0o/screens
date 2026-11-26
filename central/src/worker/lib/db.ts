@@ -84,7 +84,7 @@ export function capabilitiesFor(kind: DeviceKind): DeviceCapability[] {
     case 'lg':
       return ['remote', 'text', 'apps', 'launch', 'power', 'volume', 'media', 'toast'];
     case 'sonos':
-      return ['media', 'volume', 'group'];
+      return ['media', 'volume', 'mute', 'group', 'led', 'eq', 'favorites'];
     default:
       return [];
   }
