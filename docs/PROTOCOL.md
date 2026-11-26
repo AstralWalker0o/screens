@@ -360,3 +360,30 @@ policy or rule changes.
 `/agent/v1/upload/<key>?exp=<ms>&sig=<hex>` (PUT) carry
 `sig = hex(HMAC-SHA256(SIGNING_SECRET, method + "\n" + key + "\n" + exp))`.
 The agent treats them as opaque URLs. These paths need no other auth.
+
+---
+
+## 8. Implementation notes (v0.1.0 gateway)
+
+The gateway resolves these details beyond the sections above. They are part of the contract.
+
+- **Base64url** values (keys, signatures, nonces) are unpadded. Padded input is accepted.
+- **Frame cap.** Results are shrunk to fit the 512 KiB frame and marked `truncated: true`. In practice this caps `http.request` bodies and `adb.shell` stdout at about 400 KiB. Use signed URLs for anything bigger.
+- **Signed URLs** (`url`, `upload_url`) must be on the central origin (same scheme, host and port as `SCREENS_CENTRAL_URL`). Anything else gets `forbidden`.
+- **`http.request`**:
+  - Redirects are returned as-is unless `follow_redirects: true` is passed.
+  - Response header names are lower-cased, and repeated headers are joined with `", "`.
+  - `insecure_tls` defaults to true and also allows legacy TLS 1.0 ciphers, for old TV firmware.
+- **`ws.open`** may return `{subprotocol}`. Streams and pending requests are cancelled when the link drops, so the hub must reopen them after reconnecting. Close codes are 1001 for idle timeout, 1011 for an unknown stream, and 1009 when a frame is too big.
+- **`dns.configure`**:
+  - Each call replaces the whole config. Missing `enabled` means **false**, so DNS never binds port 53 by accident.
+  - Invalid entries are skipped and reported, not fatal.
+  - The result is `{enabled, listening, dot_listening, policy_versions, errors?}`. The hub stores it as the gateway's DNS status.
+- **`mdns.configure`** returns `{enabled, interfaces, errors?}`. The top-level `enabled` also gates SSDP.
+- **DNS server behaviour**:
+  - Only clients from private ranges or the host's own subnets are answered (open-resolver protection).
+  - Stale cache entries are served (TTL 30 s, up to 24 h old) when every upstream fails.
+  - DoH hostnames are bootstrapped via 1.1.1.1.
+  - Listen addresses are re-expanded every 30 s, picking up DHCP changes and VLANs that come up late.
+- **`sys.update`** downloads to `.new.part` and verifies the sha256 and that it's an ELF binary for this CPU. It then renames to `.new`, swaps it in and exits 0, so a `.new` file is always a verified binary.
+- **Clock skew** of more than 30 s is compensated using the hub's `Date` header (on a 401) and `welcome.server_time`.
