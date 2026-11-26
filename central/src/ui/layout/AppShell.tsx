@@ -2,7 +2,7 @@ import { useEffect, useRef, useState, type ReactNode } from 'react';
 import { NavLink, Outlet, useLocation, useNavigation } from 'react-router';
 import {
   LayoutDashboard, Building2, TvMinimalPlay, ShieldCheck, Globe, Workflow, Package, Activity, Settings, Menu as MenuIcon, X,
-  Sun, Moon, Monitor, FlaskConical, CircleCheck, CircleAlert, Info,
+  Sun, Moon, Monitor, FlaskConical, CircleCheck, CircleAlert, Info, CircleArrowUp,
 } from 'lucide-react';
 import { api, MOCK, setMockMode } from '../api';
 import { useQuery } from '../lib/query';
@@ -21,6 +21,7 @@ const NAV = [
   { to: '/dns', label: 'DNS', icon: Globe },
   { to: '/automations', label: 'Automations', icon: Workflow },
   { to: '/library', label: 'Library', icon: Package },
+  { to: '/updates', label: 'Updates', icon: CircleArrowUp },
   { to: '/activity', label: 'Activity', icon: Activity },
   { to: '/settings', label: 'Settings', icon: Settings },
 ];

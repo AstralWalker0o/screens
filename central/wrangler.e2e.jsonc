@@ -14,7 +14,9 @@
   "vars": {
     "ACCESS_TEAM_DOMAIN": "",
     "ACCESS_AUD": "",
-    "DOT_BASE_DOMAIN": "dns.screens.supercluster.au"
+    "DOT_BASE_DOMAIN": "dns.screens.supercluster.au",
+    // App update sources talk to the stand-in GitHub that tools/e2e/e2e.py serves, never to api.github.com.
+    "GITHUB_API_BASE": "http://127.0.0.1:8791"
   },
   "observability": { "enabled": true }
 }

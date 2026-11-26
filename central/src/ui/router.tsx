@@ -26,6 +26,7 @@ export const router = createBrowserRouter([
           { path: 'automations', lazy: page(() => import('./pages/Automations')) },
           { path: 'automations/:id', lazy: page(() => import('./pages/AutomationEditor')) },
           { path: 'library/:tab?', lazy: page(() => import('./pages/Library')) },
+          { path: 'updates/:tab?', lazy: page(() => import('./pages/Updates')) },
           { path: 'activity/:tab?', lazy: page(() => import('./pages/Activity')) },
           { path: 'settings', lazy: page(() => import('./pages/Settings')) },
           { path: '*', element: <NotFound /> },

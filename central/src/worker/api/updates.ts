@@ -136,6 +136,8 @@ updateRoutes.patch('/updates/sources/:package', async (c) => {
   await c.env.DB.prepare(`UPDATE update_sources SET repo = ?, asset_pattern = ?, abi_patterns = ?, include_prereleases = ?, enabled = ?, updated_at = ?,
     etag = CASE WHEN ? THEN NULL ELSE etag END, signer_sha256 = CASE WHEN ? THEN NULL ELSE signer_sha256 END WHERE package = ?`)
     .bind(s.repo, s.asset_pattern, s.abi_patterns, s.include_prereleases, s.enabled, now(), 1, resetKey || s.repo !== cur.repo ? 1 : 0, pkg).run();
+  // A new key (or repo) gets a fresh chance for releases refused before.
+  if (resetKey || s.repo !== cur.repo) await c.env.DB.prepare("DELETE FROM update_state WHERE k LIKE ?").bind(`refused:${cur.repo}#%`).run();
   await audit(c.env, actorOf(c), 'updates.source.save', { target_type: 'app', target_id: pkg, details: { ...s, reset_signer: resetKey } });
   return c.json(toSource((await c.env.DB.prepare('SELECT * FROM update_sources WHERE package = ?').bind(pkg).first<Row>())!));
 });

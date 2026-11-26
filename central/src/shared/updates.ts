@@ -363,6 +363,15 @@ export interface DeviceUpdateItem {
 }
 export interface DeviceUpdates { device_id: string; items: DeviceUpdateItem[]; probed_at: number | null; abis: string[] }
 
+/** Outcome of checking one GitHub source (POST /api/updates/check, and when a source is saved). */
+export interface UpdateCheckResult {
+  package: string;
+  status: NonNullable<UpdateSource['last_status']>;
+  detail: string;
+  tag?: string | null;
+  imported: { asset: string; abi: string | null; status: 'imported' | 'duplicate' | 'known' | 'error'; detail?: string; apk_id?: string; version?: string }[];
+}
+
 /** POST /api/updates/run */
 export interface UpdateRunRequest { package: string; site_id?: string; device_id?: string }
 export interface UpdateRunResult { rollouts: UpdateRollout[]; skipped: { site_id: string; reason: string }[] }

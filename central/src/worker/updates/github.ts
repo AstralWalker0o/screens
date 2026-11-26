@@ -5,7 +5,7 @@
 // into R2. The APK's package name must match the source, and its signing key must match the key Screens
 // learnt from the first release it imported.
 
-import type { UpdateSource } from '../../shared/updates';
+import type { UpdateCheckResult, UpdateSource } from '../../shared/updates';
 import { globMatch, versionText } from '../../shared/updates';
 import type { Env } from '../env';
 import { audit, raiseAlert, type Row } from '../lib/db';
@@ -126,11 +126,14 @@ export async function storeStream(env: Env, key: string, body: ReadableStream<Ui
   return { sha256: hex(await crypto.subtle.digest('SHA-256', buf)), size: buf.length };
 }
 
-export interface ImportResult { asset: string; abi: string | null; status: 'imported' | 'duplicate' | 'known' | 'error'; detail?: string; apk_id?: string; version?: string }
+export type ImportResult = UpdateCheckResult['imported'][number];
 
 async function importAsset(env: Env, cfg: GhConfig, src: UpdateSource, rel: GhRelease, asset: GhAsset, abi: string | null, fetcher: typeof fetch): Promise<ImportResult> {
   const origin = `${src.repo}#${asset.id}`;
   if (await env.DB.prepare('SELECT 1 FROM update_apk_info WHERE origin = ?').bind(origin).first()) return { asset: asset.name, abi, status: 'known' };
+  // Refused before (wrong app / untrusted key): don't download it again every 6 hours.
+  const refused = await getState<{ detail: string; kind: SourceError['kind'] } | null>(env, `refused:${origin}`, null);
+  if (refused) throw new SourceError(refused.detail, refused.kind);
   const res = await ghFetch(cfg, asset.browser_download_url, { accept: 'application/octet-stream' }, fetcher);
   if (res.status !== 200 || !res.body) { await res.body?.cancel().catch(() => undefined); throw new SourceError(`Downloading ${asset.name} failed (HTTP ${res.status})`); }
   const type = (res.headers.get('content-type') ?? '').split(';')[0].trim().toLowerCase();
@@ -139,15 +142,19 @@ async function importAsset(env: Env, cfg: GhConfig, src: UpdateSource, rel: GhRe
   if (asset.size && length !== asset.size) { await res.body.cancel().catch(() => undefined); throw new SourceError(`${asset.name} is ${length} bytes but GitHub lists ${asset.size}`); }
   const key = `apks/github/${src.package}/${asset.id}-${rid('a', 6).slice(2)}.apk`;
   const stored = await storeStream(env, key, res.body, length);
-  const drop = async (msg: string, kind: SourceError['kind'] = 'error'): Promise<never> => { await env.FILES.delete(key).catch(() => undefined); throw new SourceError(msg, kind); };
+  const drop = async (msg: string, kind: SourceError['kind'] = 'error', remember = false): Promise<never> => {
+    await env.FILES.delete(key).catch(() => undefined);
+    if (remember) await setState(env, `refused:${origin}`, { detail: msg, kind });
+    throw new SourceError(msg, kind);
+  };
 
   let info;
   try { info = await inspectApk(r2Reader(env.FILES, key, stored.size)); } catch (e: any) { return drop(`${asset.name}: ${e instanceof ApkError ? e.message : 'not a readable APK'}`); }
-  if (info.package !== src.package) return drop(`${asset.name} contains ${info.package}, not ${src.package}, so it was not imported.`);
+  if (info.package !== src.package) return drop(`${asset.name} contains ${info.package}, not ${src.package}, so it was not imported.`, 'error', true);
   if (info.version_code == null) return drop(`${asset.name} has no version code`);
   const certs = allCerts(info.signing).map((c) => c.sha256);
   if (src.signer_sha256 && !certs.includes(src.signer_sha256)) {
-    return drop(`${rel.tag_name} (${asset.name}) is signed with a different key than earlier releases. It was not imported. If the developer really changed keys, reset the trusted key on this source.`, 'signer');
+    return drop(`${rel.tag_name} (${asset.name}) is signed with a different key than earlier releases. It was not imported. If the developer really changed keys, reset the trusted key on this source.`, 'signer', true);
   }
   const newest = newestSignerCert(info.signing)?.sha256 ?? null;
   if (newest && newest !== src.signer_sha256) {
@@ -174,7 +181,7 @@ async function importAsset(env: Env, cfg: GhConfig, src: UpdateSource, rel: GhRe
   return { asset: asset.name, abi, status: 'imported', apk_id: id, version: versionText(info) };
 }
 
-export interface CheckResult { package: string; status: NonNullable<UpdateSource['last_status']>; detail: string; imported: ImportResult[]; tag?: string | null }
+export type CheckResult = UpdateCheckResult;
 
 /** Check one source now. Never throws: the outcome is stored on the source and returned. */
 export async function checkSource(env: Env, srcRow: Row, opts: { fetcher?: typeof fetch } = {}): Promise<CheckResult> {
@@ -270,8 +277,18 @@ export async function checkAllSources(env: Env, pkg?: string): Promise<CheckResu
   return out;
 }
 
-/** Cron hook (every minute): read new library uploads, check due sources. */
+/** Cron hook (every minute): read new library uploads, check due sources; daily clean-up. */
 export async function updatesCron(env: Env, t: number) {
   await ensureApkInfo(env, 3).catch((e) => console.error('apk inspect failed', e));
   await checkDueSources(env, t).catch((e) => console.error('update source check failed', e));
+  const d = new Date(t);
+  if (d.getUTCHours() === 17 && d.getUTCMinutes() === 41) {
+    await env.DB.batch([
+      env.DB.prepare("DELETE FROM update_rollouts WHERE created_at < ? AND status NOT IN ('canary','rolling')").bind(t - 90 * 86_400_000),
+      env.DB.prepare('DELETE FROM update_apk_info WHERE apk_id NOT IN (SELECT id FROM apks)'),
+      env.DB.prepare('DELETE FROM update_devices WHERE device_id NOT IN (SELECT id FROM devices)'),
+      env.DB.prepare('DELETE FROM update_device_apps WHERE device_id NOT IN (SELECT id FROM devices)'),
+      env.DB.prepare('DELETE FROM update_sites WHERE site_id NOT IN (SELECT id FROM sites)'),
+    ]).catch((e) => console.error('updates retention failed', e));
+  }
 }

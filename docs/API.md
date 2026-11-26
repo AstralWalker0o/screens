@@ -133,3 +133,23 @@ Failed commands are stored on the device as `facts.last_error = {command, messag
 Sonos errors are translated from UPnP codes into plain English (`central/src/worker/adapters/sonos-parse.ts` → `sonosErrorMessage`), e.g. 701 on Play = the app/session that started the music has ended, 712 = shuffle/repeat need the Sonos queue, 716 = the music service couldn't find the item, 800 = only the group's main speaker can do that.
 
 Site guest settings (`SiteSettings.guest`) include `welcome: WelcomeConfig`, `kiosk: KioskConfig` (write `kiosk.pin` as 4–8 digits, read `kiosk.pin_set`) and `show_welcome_after_reset`. Saving them re-pushes the launcher config to every device that has it.
+
+## App updates (`/api/updates/*`)
+
+Android app update manager, see [UPDATES.md](UPDATES.md). Types are in `central/src/shared/updates.ts`.
+
+| Method | Path | Body | Returns |
+|---|---|---|---|
+| GET | `/api/updates` | | `UpdatesOverview`: every sideloaded app with its version and state on each Android box (grouped by site in the UI), builds, source, policies, maintenance windows, boxes (ABIs, build choice), rollouts, recent `app_update` jobs, summary |
+| GET | `/api/updates/summary` | | `UpdatesSummary` (Overview card) |
+| GET | `/api/updates/device/:id` | | `DeviceUpdates`: per-app state on one box |
+| PUT | `/api/updates/policies` | `{package, scope_type: "fleet"\|"site", scope_id?, mode: "auto"\|"notify"\|"pin"\|null}` | `{ok}` (`null` removes the policy) |
+| GET | `/api/updates/sources` | | `UpdateSource[]` |
+| POST | `/api/updates/sources` | `{package, repo: "owner/name", asset_pattern, abi_patterns?: {abi: pattern}, include_prereleases?, enabled?}` | `{source, check: UpdateCheckResult}` (creates or replaces, then checks straight away) |
+| PATCH / DELETE | `/api/updates/sources/:package` | partial, `reset_signer: true` forgets the trusted key | `UpdateSource` / `{ok}` |
+| POST | `/api/updates/check` | `{package?}` | `{results: UpdateCheckResult[]}` (GitHub now, ignoring the 6 h schedule but not GitHub's rate limit) |
+| PUT | `/api/updates/sites/:id` | `{window_start: "HH:MM", window_end, canary_device_id?}` | `UpdateSiteSettings` |
+| PUT | `/api/updates/devices/:id` | `{abi_override: abi\|null}` | `{ok}` |
+| POST | `/api/updates/run` | `{package, site_id?, device_id?}` | `UpdateRunResult`: one rollout per site (all sites with the app when neither is given; a single box is installed even while in use) |
+| POST | `/api/updates/rollouts/:id/cancel` | | `UpdateRollout` |
+| POST | `/api/updates/probe` | `{site_id?, device_id?}` | `{ok, devices}` (re-reads app inventory, installers, signers and ABIs in the background, then plans automatic updates) |

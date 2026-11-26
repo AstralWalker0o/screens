@@ -9,6 +9,9 @@ import type {
   SiteDetail, SiteKind, SiteSummary, DeviceKind, BulkCommandRequest, BulkCommandResult, SiteSettings, GuestSettings, VersionInfo,
 } from '../shared/types';
 import type { SonosSiteOverview } from '../shared/sonos';
+import type {
+  DeviceUpdates, UpdateCheckResult, UpdateMode, UpdateRollout, UpdateRunRequest, UpdateRunResult, UpdateSiteSettings, UpdateSource, UpdatesOverview, UpdatesSummary,
+} from '../shared/updates';
 
 export class ApiError extends Error {
   status: number;
@@ -217,6 +220,25 @@ export const api = {
     update: (id: string, a: Partial<Automation>) => patch<Automation>(`/api/automations/${enc(id)}`, a),
     remove: (id: string) => del<Ok>(`/api/automations/${enc(id)}`),
     run: (id: string) => post<{ ok: boolean; jobs: Job[] }>(`/api/automations/${enc(id)}/run`),
+  },
+
+  /** App update manager (docs/UPDATES.md). */
+  updates: {
+    overview: () => get<UpdatesOverview>('/api/updates'),
+    summary: () => get<UpdatesSummary>('/api/updates/summary'),
+    device: (id: string) => get<DeviceUpdates>(`/api/updates/device/${enc(id)}`),
+    setPolicy: (b: { package: string; scope_type: 'fleet' | 'site'; scope_id?: string | null; mode: UpdateMode | null }) => put<Ok>('/api/updates/policies', b),
+    saveSource: (b: Pick<UpdateSource, 'package' | 'repo' | 'asset_pattern' | 'abi_patterns' | 'include_prereleases'> & { enabled?: boolean }) =>
+      post<{ source: UpdateSource; check: UpdateCheckResult | null }>('/api/updates/sources', b),
+    updateSource: (pkg: string, b: Partial<Pick<UpdateSource, 'repo' | 'asset_pattern' | 'abi_patterns' | 'include_prereleases' | 'enabled'>> & { reset_signer?: boolean }) =>
+      patch<UpdateSource>(`/api/updates/sources/${enc(pkg)}`, b),
+    removeSource: (pkg: string) => del<Ok>(`/api/updates/sources/${enc(pkg)}`),
+    check: (pkg?: string) => post<{ results: UpdateCheckResult[] }>('/api/updates/check', pkg ? { package: pkg } : {}),
+    saveSite: (id: string, b: { window_start: string; window_end: string; canary_device_id: string | null }) => put<UpdateSiteSettings>(`/api/updates/sites/${enc(id)}`, b),
+    setDeviceAbi: (id: string, abi: string | null) => put<Ok>(`/api/updates/devices/${enc(id)}`, { abi_override: abi }),
+    run: (b: UpdateRunRequest) => post<UpdateRunResult>('/api/updates/run', b),
+    cancel: (id: string) => post<UpdateRollout>(`/api/updates/rollouts/${enc(id)}/cancel`),
+    probe: (b: { site_id?: string; device_id?: string } = {}) => post<{ ok: boolean; devices: number }>('/api/updates/probe', b),
   },
 
   jobs: (p: { site_id?: string; device_id?: string; limit?: number } = {}) => get<Job[]>(`/api/jobs${qs(p)}`),

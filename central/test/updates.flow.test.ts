@@ -100,6 +100,10 @@ describe('GitHub source → library', () => {
     expect(bad.detail).toMatch(/different key/);
     expect(files.objects.size).toBe(before); // the download was deleted
     expect((await env.DB.prepare("SELECT count(*) n FROM alerts WHERE type = 'update.signer'").first()).n).toBe(1);
+    // Refused once: not downloaded again on the next check.
+    const again = fakeGitHub({ tag: 'v9', assets: [{ id: 9, name: 'a.apk', file: 'v2-k2.apk' }] });
+    expect((await checkSource(env, (await src())!, { fetcher: again.fetcher })).detail).toMatch(/different key/);
+    expect(again.log.some((l) => new URL(l.url).host !== 'api.github.com')).toBe(false);
 
     const other = await addSource(env, 'com.example.other', { asset_pattern: '*.apk', abi_patterns: {} });
     const wrong = await checkSource(env, (await other())!, { fetcher: fakeGitHub({ tag: 'v1', assets: [{ id: 21, name: 'a.apk', file: 'v1-k1.apk' }] }).fetcher });
@@ -235,7 +239,7 @@ describe('staged rollout on a site', () => {
     expect(boxes.map((b) => b.installs[0])).toEqual([arm64, armv7, arm64]);
     const jobs = (await env.DB.prepare("SELECT status, device_id, params FROM jobs WHERE kind = 'app_update' ORDER BY created_at, device_id").all()).results;
     expect(jobs.map((j: any) => j.status)).toEqual(['ok', 'ok', 'ok']);
-    expect(JSON.parse(jobs[0].params)).toMatchObject({ package: PKG, from: '1', to: '1.1', canary: true });
+    expect(JSON.parse(jobs[0].params)).toMatchObject({ package: PKG, from: '1.0', from_code: 1, to: '1.1', canary: true });
     expect(deviceUpdates(await loadFleet(env, { deviceId: 'dev_b' }), 'dev_b').items[0]).toMatchObject({ state: 'current', installed: '1.1' });
     // The strong signer (SHA-256 read off the box) was cached for next time.
     expect((await env.DB.prepare("SELECT signer_sha256 FROM update_device_apps WHERE device_id = 'dev_a'").first()).signer_sha256).toMatch(/^\["[0-9a-f]{64}"\]$/);

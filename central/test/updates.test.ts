@@ -4,6 +4,7 @@ import { zipSync } from 'fflate';
 import { describe, expect, it } from 'vitest';
 import { allCerts, bytesReader, inspectApk, javaHash, newestSignerCert, signingFromTail, type RandomAccess } from '../src/worker/updates/apk';
 import { parseManifest } from '../src/worker/updates/axml';
+import { parseApk } from '../src/worker/lib/apk';
 import {
   boxState, compareVersionNames, compareVersions, effectiveSigner, globMatch, inWindow, localMinutes, nextWindowStart, pickCandidate,
   resolveMode, rolloutOrder, signerVerdict, type UpdateCandidate, type UpdatePolicyRow,
@@ -22,6 +23,10 @@ describe('APK inspection (real APKs built with aapt2 + apksigner)', () => {
     expect(a.signing.v2[0].certs[0]).toMatchObject({ sha256: k1.sha256, java_hash: k1.java_hash, subject: 'CN=Screens test fixture k1' });
     expect(a.signing.v1[0].certs[0].sha256).toBe(k1.sha256);
     expect(newestSignerCert(a.signing)?.sha256).toBe(k1.sha256);
+  });
+
+  it('agrees with the Library upload parser', async () => {
+    expect(parseApk(fx('v1-k1.apk'))).toMatchObject({ package: expected.package, version_code: 1, version_name: '1.0', label: 'Screens Fixture' });
   });
 
   it('lists native ABIs', async () => {

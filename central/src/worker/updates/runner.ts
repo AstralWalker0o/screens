@@ -125,6 +125,10 @@ export class UpdateRunner {
         await this.h.syncApps(d.id).catch(() => undefined);
         await this.probeDevice(d).catch(() => undefined);
       }
+      // Fresh facts: look for automatic updates straight away instead of at the next 5-minute plan.
+      this.lastPlan = 0;
+      if (this.running) await this.running.catch(() => undefined);
+      this.kick();
     })());
     return { devices: rows.length };
   }
@@ -373,11 +377,13 @@ export class UpdateRunner {
     if (verdict === 'unknown' && r.trigger === 'auto') return { status: 'skipped', detail: 'Couldn’t confirm the installed app’s signing key, so it wasn’t updated automatically. Use “Update now” to try.' };
 
     const from = pre.version_code;
+    const fromName = (await this.env.DB.prepare('SELECT version_name FROM device_apps WHERE device_id = ? AND package = ?').bind(row.id, pkg).first<Row>())?.version_name
+      ?? (from != null ? `build ${from}` : null);
     const apkRow = await this.env.DB.prepare('SELECT r2_key, sha256, version_name FROM apks WHERE id = ?').bind(apk.apk_id).first<Row>();
     if (!apkRow) return { status: 'skipped', detail: 'The build was deleted from the library' };
     const job_id = await createJob(this.env, {
       site_id: this.siteId, device_id: row.id, kind: 'app_update', actor: r.actor ?? (r.trigger === 'auto' ? 'automation:updates' : 'system'),
-      params: { package: pkg, label: r.label, from: from != null ? String(from) : null, to: apk.version_name ?? String(apk.version_code), apk_id: apk.apk_id, rollout_id: r.id, canary: !!d.canary, trigger: r.trigger, abis: apk.abis },
+      params: { package: pkg, label: r.label, from: fromName, from_code: from, to: apk.version_name ?? String(apk.version_code), apk_id: apk.apk_id, rollout_id: r.id, canary: !!d.canary, trigger: r.trigger, abis: apk.abis },
     });
     const fail = async (detail: string): Promise<Outcome> => {
       await finishJob(this.env, job_id, 'error', { ok: false, detail });
@@ -411,7 +417,7 @@ export class UpdateRunner {
       if (!lc.ok) return fail(`${lc.detail} The app was updated on this box; Screens can’t roll back (Android doesn’t allow downgrades without wiping the app).`);
       health = lc.detail;
     }
-    const detail = `Updated ${from != null ? `from build ${from} ` : ''}to ${versionText(apk)}. ${health}`;
+    const detail = `Updated ${fromName ? `from ${fromName} ` : ''}to ${versionText(apk)}. ${health}`;
     await finishJob(this.env, job_id, 'ok', { ok: true, detail, from, to: vc, apk_id: apk.apk_id, abis: apk.abis });
     await audit(this.env, r.actor ?? 'system', 'device.app_update', { target_type: 'device', target_id: row.id, site_id: this.siteId, details: { package: pkg, from, to: vc, rollout: r.id } });
     await resolveAlert(this.env, `upd_fail:${row.id}:${pkg}`);
