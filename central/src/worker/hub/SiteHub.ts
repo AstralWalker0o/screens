@@ -9,13 +9,13 @@ import { AdapterError, xmlTag } from '../adapters/types';
 import { htmlUnescape } from '../adapters/samsung';
 import { classify, compilePolicies, refreshLists } from '../dns/compile';
 import { buildDnsConfig } from '../dns/config';
-import { certNotAfter, issueCertificate, upsertRecord, zoneId } from '../acme/acme';
+import { certNotAfter, deleteRecord, issueCertificate, upsertRecord, zoneId } from '../acme/acme';
 import type { Env } from '../env';
 import { b64Decode, b64Encode, openJson, sealJson, signAgentUrl } from '../lib/crypto';
 import {
   audit, createJob, finishJob, getAppSettings, kioskPinHash, raiseAlert, resolveAlert, type Row, siteMdns, siteNetwork, siteSettings, toAutomation, toDevice, toDiscovered,
 } from '../lib/db';
-import { chunk, dayKey, hourKey, HttpError, isPrivateIPv4, normMac, now, parseJson, rid, sleep } from '../lib/util';
+import { chunk, dayKey, hourKey, HttpError, isDotLabel, isPrivateIPv4, normMac, now, parseJson, randomDotLabel, rid, sleep } from '../lib/util';
 import { scoreDevice } from '../privacy/score';
 import { seed } from '../lib/seed';
 import { RelayStream } from './stream';
@@ -289,6 +289,7 @@ export class SiteHub extends DurableObject<Env> {
       await this.env.DB.prepare("UPDATE gateways SET info = json_set(info, '$.interfaces', json(?)) WHERE id = ?").bind(JSON.stringify(r.host), gwId).run();
     }
     this.broadcast({ type: 'network', status: st.status });
+    this.ctx.waitUntil(this.refreshDotRecord().catch(() => undefined));
   }
 
   async networkState(live = false): Promise<NetworkState> {
@@ -1046,6 +1047,7 @@ export class SiteHub extends DurableObject<Env> {
         }
       }
       if (this.online) this.setKv('offline_event_fired', false);
+      if (this.online && due('dot_retry', 2 * 60_000)) await this.retryDot();
       if (this.kv<boolean>('dot_pending', false) && this.online) await this.provisionDot();
       if (due('flush', 5 * 60_000)) await this.flushAggregates();
       if (due('hourly', 3_600_000)) await this.hourly();
@@ -1185,7 +1187,7 @@ export class SiteHub extends DurableObject<Env> {
       command: this.command, refreshDevice: this.refreshDevice, syncApps: this.syncApps, discover: this.discover, adopt: this.adopt,
       dnsLog: this.dnsLog, dnsSummary: this.dnsSummary, privacy: this.privacy, mdnsStatus: this.mdnsStatus, gatewayLogs: this.gatewayLogs, networkState: this.networkState, pushNetConfig: this.pushNetConfig,
       gatewayAction: this.gatewayAction, disconnectAgent: this.disconnectAgent, guestReset: this.guestReset, enforceApps: this.enforceApps,
-      runAutomation: this.runAutomation, pushDnsConfig: this.pushDnsConfig, pushMdnsConfig: this.pushMdnsConfig, status: this.status,
+      runAutomation: this.runAutomation, retryDotNow: this.requestDot, pushDnsConfig: this.pushDnsConfig, pushMdnsConfig: this.pushMdnsConfig, status: this.status,
       requestDot: this.requestDot, flushAggregates: this.flushAggregates, pushLauncherConfig: this.pushLauncherConfig,
     };
     const fn = allowed[method];
@@ -1203,17 +1205,22 @@ export class SiteHub extends DurableObject<Env> {
   async requestDot() {
     this.setKv('dot_pending', true);
     await this.env.DB.prepare(`INSERT INTO dot_certs (site_id, hostname, status, updated_at) VALUES (?, ?, 'pending', ?)
-      ON CONFLICT(site_id) DO UPDATE SET status = 'pending', last_error = NULL, updated_at = excluded.updated_at`).bind(this.siteId, await this.dotHostname(), now()).run();
+      ON CONFLICT(site_id) DO UPDATE SET hostname = excluded.hostname, status = 'pending', last_error = NULL, updated_at = excluded.updated_at`).bind(this.siteId, await this.dotHostname(), now()).run();
     await this.ctx.storage.setAlarm(now() + 1000);
     return { ok: true };
   }
 
+  /**
+   * The site's DoT hostname: a random label under the base domain. Certificates are published in public
+   * Certificate Transparency logs and the A record is public DNS, so the name must not reveal the site or client.
+   */
   private async dotHostname(): Promise<string> {
-    const site = await this.site();
     const app = await getAppSettings(this.env);
     const base = (app.dot_base_domain || this.env.DOT_BASE_DOMAIN || '').replace(/^\.+|\.+$/g, '');
     if (!base) throw new HttpError(409, 'not_configured', 'Set the DNS-over-TLS base domain in Settings first');
-    return `${site.slug}.${base}`;
+    const cur = (await this.env.DB.prepare('SELECT hostname FROM dot_certs WHERE site_id = ?').bind(this.siteId).first<Row>())?.hostname as string | undefined;
+    if (cur && cur.endsWith(`.${base}`) && isDotLabel(cur.slice(0, -base.length - 1))) return cur;
+    return `${randomDotLabel()}.${base}`;
   }
 
   /** The online gateway's usable IPv4 addresses as CIDRs (no loopback / docker bridge). */
@@ -1241,9 +1248,42 @@ export class SiteHub extends DurableObject<Env> {
     return best.split('/')[0];
   }
 
+  /**
+   * Retry a failed or stuck certificate request: straight away once a missing token has been added,
+   * otherwise every 30 minutes (well inside Let's Encrypt's failed-validation limits).
+   */
+  private async retryDot() {
+    const dot = await this.env.DB.prepare('SELECT status, last_error, updated_at FROM dot_certs WHERE site_id = ?').bind(this.siteId).first<Row>();
+    if (!dot || dot.status === 'issued' || !siteSettings(await this.site()).dot_enabled) return;
+    const age = now() - Number(dot.updated_at ?? 0);
+    const tokenNowSet = dot.status === 'error' && /CF_DNS_TOKEN|DNS token/.test(String(dot.last_error ?? '')) && !!this.env.CF_DNS_TOKEN;
+    if (tokenNowSet || (dot.status === 'error' && age > 30 * 60_000) || (dot.status === 'pending' && age > 30 * 60_000)) this.setKv('dot_pending', true);
+  }
+
+  /** After the gateway's addresses change, keep the site's DoT hostname pointing at the best gateway address. */
+  private async refreshDotRecord() {
+    const dot = await this.env.DB.prepare("SELECT hostname FROM dot_certs WHERE site_id = ? AND status = 'issued'").bind(this.siteId).first<Row>();
+    if (!dot || !this.env.CF_DNS_TOKEN) return;
+    const ip = await this.dotAddress().catch(() => null);
+    if (!ip || ip === this.kv<string | null>('dot_ip', null)) return;
+    const zone = await zoneId(this.env, dot.hostname);
+    await upsertRecord(this.env, zone, 'A', dot.hostname, ip);
+    this.setKv('dot_ip', ip);
+    this.sql.exec('INSERT INTO gwlog (ts, level, msg) VALUES (?,?,?)', now(), 'info', `[dot] ${dot.hostname} now points at ${ip}`);
+  }
+
   private async provisionDot() {
     this.setKv('dot_pending', false);
     const host = await this.dotHostname();
+    // Pin the (possibly new) random name before talking to Cloudflare/Let's Encrypt, so retries reuse it,
+    // and drop the public record of a previous name (e.g. an older site-name hostname).
+    const prev = await this.env.DB.prepare('SELECT hostname, dns_record_id FROM dot_certs WHERE site_id = ?').bind(this.siteId).first<Row>();
+    await this.env.DB.prepare("UPDATE dot_certs SET status = 'pending', last_error = NULL, updated_at = ? WHERE site_id = ? AND status != 'issued'").bind(now(), this.siteId).run();
+    if (prev && prev.hostname !== host) {
+      await this.env.DB.prepare('UPDATE dot_certs SET hostname = ?, dns_record_id = NULL WHERE site_id = ?').bind(host, this.siteId).run();
+      if (prev.dns_record_id && this.env.CF_DNS_TOKEN) await deleteRecord(this.env, await zoneId(this.env, host), prev.dns_record_id).catch(() => undefined);
+      this.setKv('dot_ip', null);
+    }
     const logLines: string[] = [];
     const log = (m: string) => { logLines.push(m); this.sql.exec('INSERT INTO gwlog (ts, level, msg) VALUES (?,?,?)', now(), 'info', `[dot] ${m}`); };
     try {
@@ -1252,6 +1292,7 @@ export class SiteHub extends DurableObject<Env> {
       const zone = await zoneId(this.env, host);
       log(`Pointing ${host} at ${ip}`);
       const recordId = await upsertRecord(this.env, zone, 'A', host, ip);
+      this.setKv('dot_ip', ip);
       const { csr_pem } = await this.gw<{ csr_pem: string }>('tls.csr', { hostname: host }, 20_000);
       const chain = await issueCertificate(this.env, host, csr_pem, log);
       await this.gw('tls.install', { cert_pem: chain }, 20_000);

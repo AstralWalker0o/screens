@@ -147,6 +147,7 @@ export const api = {
     guestReset: (id: string, device_ids?: string[]) => post<GuestResetResult>(`/api/sites/${enc(id)}/guest-reset`, device_ids ? { device_ids } : {}),
     mdns: (id: string) => get<MdnsState>(`/api/sites/${enc(id)}/mdns`),
     saveMdns: (id: string, cfg: MdnsConfig) => put<Ok>(`/api/sites/${enc(id)}/mdns`, cfg),
+    retryDot: (id: string) => post<Ok>(`/api/sites/${enc(id)}/dot/retry`),
     network: (id: string) => get<NetworkState>(`/api/sites/${enc(id)}/network`),
     saveNetwork: (id: string, cfg: NetConfig) => put<NetworkState>(`/api/sites/${enc(id)}/network`, cfg),
     dnsLog: (id: string, q: DnsLogQuery = {}) => get<DnsLogEntry[]>(`/api/sites/${enc(id)}/dns/log${qs({ limit: 200, ...q })}`),

@@ -17,6 +17,18 @@ export interface Release {
 
 export const RELEASES: Release[] = [
   {
+    version: '0.4.1',
+    date: '2026-11-26',
+    title: 'Private DNS hostnames that don\'t reveal your sites',
+    summary: 'Each site\'s encrypted-DNS hostname is now a random name, and failed certificate requests retry by themselves.',
+    components: { gateway: '0.3.0', launcher: '1.0.0' },
+    notes: [
+      { kind: 'security', text: 'Private DNS hostnames are now random (e.g. q4mzt7xk2pa6wd3n.dns.screens.supercluster.au) instead of the site name. Hostnames end up in public DNS and in public certificate logs, so site and client names are no longer exposed.' },
+      { kind: 'improved', text: 'A Private DNS certificate that couldn\'t be issued is retried automatically: straight away once the Cloudflare token is added, otherwise every 30 minutes. Site → Settings also has a Retry now button.' },
+      { kind: 'improved', text: 'When you add a VLAN to the gateway, the site\'s Private DNS hostname moves to the gateway address on the network where most Android boxes are.' },
+    ],
+  },
+  {
     version: '0.4.0',
     date: '2026-11-26',
     title: 'Add VLANs to the gateway from the dashboard',

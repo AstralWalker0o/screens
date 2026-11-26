@@ -86,7 +86,7 @@ export const sites: Omit<SiteDetail, 'devices' | 'gateway' | 'gateway_status' | 
     id: 's_home', client_id: 'cl_home', name: 'Home', slug: 'home', kind: 'residential', timezone: 'Australia/Sydney', address: 'Bondi NSW',
     created_at: NOW - 120 * D, notes: null,
     settings: baseSettings({ dot_enabled: true, scan_cidrs: ['10.0.20.0/24'] }),
-    dot_hostname: 'home.dns.screens.supercluster.au', dot_status: 'Certificate active · 1 device using Private DNS',
+    dot_hostname: 'q4mzt7xk2pa6wd3n.dns.screens.supercluster.au', dot_status: 'Certificate active · 1 device using Private DNS',
   },
   {
     id: 's_beach', client_id: 'cl_coastal', name: 'Beach House', slug: 'beach-house', kind: 'rental', timezone: 'Australia/Sydney', address: '14 Marine Pde, Byron Bay NSW',
@@ -111,7 +111,7 @@ export const sites: Omit<SiteDetail, 'devices' | 'gateway' | 'gateway_status' | 
         },
       }),
     }),
-    dot_hostname: 'beach-house.dns.screens.supercluster.au', dot_status: 'Off',
+    dot_hostname: 'h7c2vkq5rmx3ty6e.dns.screens.supercluster.au', dot_status: 'Off',
   },
   {
     id: 's_office', client_id: 'cl_coastal', name: 'Coastal Rentals Office', slug: 'office', kind: 'business', timezone: 'Australia/Sydney', address: 'Ballina NSW',
@@ -152,7 +152,7 @@ export const devices: Device[] = [
     id: 'dev_lr_shield', site_id: 's_home', kind: 'android', name: 'Living Room Shield', room: 'Living room', ip: '10.0.20.31', mac: '00:04:4b:e5:91:02', port: 5555,
     manufacturer: 'NVIDIA', model: 'SHIELD Android TV Pro', os_version: 'Android 11 (Shield 9.2.0)', serial: '1323219012345',
     status: 'online', power: 'on', current_app: 'Plex', last_seen: NOW - 15 * S, tags: ['streamer', 'main'],
-    dns_mode: 'enforce', dns_policy: 'balanced', private_dns: 'home.dns.screens.supercluster.au', privacy_score: 86,
+    dns_mode: 'enforce', dns_policy: 'balanced', private_dns: 'q4mzt7xk2pa6wd3n.dns.screens.supercluster.au', privacy_score: 86,
     facts: { sdk: 30, build: '9.2.0', screen: '3840×2160', package: 'com.plexapp.android', launcher: { installed: false, checked_at: NOW - 1 * D } },
   }),
   dev({
@@ -625,7 +625,7 @@ export const gatewayLogs: Record<string, string[]> = {
     'level=info msg="mdns reflector" rule="eth0.20→eth0" reflected=212 filtered=18 window=60s',
     'level=info msg="adb connect" serial=10.0.20.31:5555 state=device',
     'level=warn msg="upstream timeout" upstream=https://1.0.0.1/dns-query ms=2000',
-    'level=info msg="dot handshake" client=10.0.20.31 sni=home.dns.screens.supercluster.au',
+    'level=info msg="dot handshake" client=10.0.20.31 sni=q4mzt7xk2pa6wd3n.dns.screens.supercluster.au',
     'level=info msg="ws relay open" stream=s_88 url=wss://10.0.20.40:8002/api/v2/channels/samsung.remote.control',
     'level=info msg="screencap uploaded" serial=10.0.20.31:5555 bytes=148223 width=1280 height=720',
     'level=info msg="lg pairing prompt shown" ip=10.0.20.45 waiting=true',

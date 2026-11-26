@@ -106,7 +106,7 @@ async function siteDetail(c: { env: import('../env').Env }, id: string): Promise
   return {
     ...summary, notes: site!.notes, settings: siteSettings(site!), gateway: gw ? toGateway(gw, rel?.version) : null,
     devices: devices.results.map(toDevice),
-    dot_hostname: dot?.hostname ?? (base ? `${site!.slug}.${base}` : null),
+    dot_hostname: dot?.hostname ?? null, // random per site, assigned when encrypted DNS is first turned on
     dot_status: dot ? (dot.status === 'error' ? `error: ${dot.last_error}` : dot.status) : null,
   };
 }
@@ -295,6 +295,16 @@ siteRoutes.get('/sites/:id/apps', async (c) => {
     FROM device_apps a JOIN devices d ON d.id = a.device_id LEFT JOIN app_catalog k ON k.package = a.package
     WHERE d.site_id = ? GROUP BY a.package ORDER BY min(a.system), label`).bind(c.req.param('id')).all<Row>();
   return c.json(rows.results.map((r) => ({ package: r.package, label: r.label, system: !!r.system, category: r.category, risk: r.risk, devices: r.devices, kinds: String(r.kinds ?? '').split(',') })));
+});
+
+siteRoutes.post('/sites/:id/dot/retry', async (c) => {
+  const id = c.req.param('id');
+  const site = await c.env.DB.prepare('SELECT settings FROM sites WHERE id = ?').bind(id).first<Row>();
+  if (!site) throw new HttpError(404, 'not_found', 'Site not found');
+  if (!siteSettings(site).dot_enabled) throw new HttpError(409, 'not_enabled', 'Turn on encrypted DNS for this site first');
+  await hub(c.env, id, originOf(c.req.raw, c.env), 'retryDotNow');
+  await audit(c.env, actorOf(c), 'dot.retry', { site_id: id });
+  return c.json({ ok: true });
 });
 
 // ---------------------------------------------------------------- gateway network legs

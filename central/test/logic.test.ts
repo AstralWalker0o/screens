@@ -303,3 +303,18 @@ describe('Samsung cross-VLAN pairing hint', () => {
     expect(samsungVlanHelp('10.10.50.192', [])).toBeNull();
   });
 });
+
+describe('DoT hostnames', () => {
+  it('are random 16-char base32 labels that reveal nothing about the site', async () => {
+    const { randomDotLabel, isDotLabel } = await import('../src/worker/lib/util');
+    const seen = new Set<string>();
+    for (let i = 0; i < 200; i++) {
+      const l = randomDotLabel();
+      expect(isDotLabel(l)).toBe(true);
+      seen.add(l);
+    }
+    expect(seen.size).toBe(200);
+    expect(isDotLabel('test-site-1')).toBe(false);
+    expect(isDotLabel('beachhouse')).toBe(false);
+  });
+});

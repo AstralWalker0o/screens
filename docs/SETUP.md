@@ -69,7 +69,7 @@ each device is changed instead.
 
 - **Android TV / Shield:** on the device's **Privacy** tab, switch on
   **Private DNS**. It uses encrypted DNS-over-TLS to the gateway, at
-  `<site>.dns.screens.supercluster.au`. Enable *Private DNS* in the site's
+  a random per-site name such as `q4mzt7xk2pa6wd3n.dns.screens.supercluster.au` (random so site names never show up in public DNS or certificate logs). Enable *Private DNS* in the site's
   Settings tab first, which issues a certificate for the site. (One-time,
   for the whole app: the Cloudflare DNS token must be added as the Worker
   secret `CF_DNS_TOKEN`. The Settings page shows the exact steps.) Screens checks

@@ -125,7 +125,7 @@ function PrivateDnsCard({ form, setForm, saved }: { form: AppSettings; setForm: 
       <CardHeader title="Private DNS (Android)" icon={KeyRound} subtitle="Encrypted DNS that Android TV boxes can’t sidestep." />
       <CardBody className="space-y-5">
         <p className="text-sm text-muted">
-          Android’s Private DNS setting sends every lookup to Screens over an encrypted connection (DNS-over-TLS), even if an app or the network tries to use a different DNS server. Each site gets its own hostname, such as <span className="font-mono text-fg">beach-house.{base}</span>.
+          Android’s Private DNS setting sends every lookup to Screens over an encrypted connection (DNS-over-TLS), even if an app or the network tries to use a different DNS server. Each site gets its own random hostname, such as <span className="font-mono text-fg">q4mzt7xk2pa6wd3n.{base}</span>, so site and client names never appear in public DNS or in the public certificate logs.
         </p>
         <Field label="DNS-over-TLS base domain" htmlFor="dot-base" hint="Site hostnames are created under this domain. Change it only if you use your own domain.">
           <Input id="dot-base" mono placeholder={DEFAULT_DOT} value={form.dot_base_domain ?? ''} onChange={(e) => setForm({ ...form, dot_base_domain: e.target.value })} className="sm:max-w-sm" />

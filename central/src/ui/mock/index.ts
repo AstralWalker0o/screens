@@ -137,7 +137,7 @@ function siteDetail(id: string): SiteDetail {
   return {
     ...siteSummary(s), notes: s.notes, settings: s.settings, gateway: gw ? gatewayView(gw) : null,
     devices: db.devices.filter((d) => d.site_id === id).map(withSite),
-    dot_hostname: s.dot_hostname ?? (db.settings.dot_base_domain ? `${s.slug}.${db.settings.dot_base_domain}` : null),
+    dot_hostname: s.dot_hostname ?? null,
     dot_status: s.settings.dot_enabled ? s.dot_status ?? 'Certificate pending' : 'Off',
   };
 }
@@ -793,6 +793,7 @@ function networkState(siteId: string): NetworkState {
   return { supported: !!gw, gateway_online: gw?.status === 'online', config, status, errors: [], host, updated_at: Date.now() };
 }
 on('GET', '/api/sites/:id/network', (c) => networkState(c.params[0]));
+on('POST', '/api/sites/:id/dot/retry', async () => { await sleep(600); return { ok: true }; });
 on('PUT', '/api/sites/:id/network', async (c) => {
   await sleep(900);
   db.network[c.params[0]] = b<NetConfig>(c);

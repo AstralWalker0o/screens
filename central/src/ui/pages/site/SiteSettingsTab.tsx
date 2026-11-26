@@ -1,6 +1,6 @@
 import { useEffect, useState } from 'react';
 import { useNavigate } from 'react-router';
-import { Save, Settings2, ShieldCheck, KeyRound, Trash2, Lock, Network } from 'lucide-react';
+import { Save, Settings2, ShieldCheck, KeyRound, Trash2, Lock, Network, RotateCw } from 'lucide-react';
 import type { DnsMode, DnsPolicyName, SiteDetail, SiteKind } from '../../../shared/types';
 import { api } from '../../api';
 import { act, setQueryData } from '../../lib/query';
@@ -93,10 +93,19 @@ export function SiteSettingsTab({ site }: { site: SiteDetail }) {
               items={[
                 ['Hostname', site.dot_hostname ? (
                   <span className="inline-flex flex-wrap items-center gap-2"><span className="font-mono text-[13px]">{site.dot_hostname}</span><CopyButton text={site.dot_hostname} size="xs" variant="ghost" /></span>
-                ) : 'Set a base domain in Settings first'],
-                ['Status', site.dot_status ? <Badge tone={/active/i.test(site.dot_status) ? 'ok' : /off/i.test(site.dot_status) ? 'neutral' : 'warn'} icon={Lock}>{site.dot_status}</Badge> : '–'],
+                ) : s.dot_enabled ? 'A random name is assigned when you save' : 'A random name is assigned when you turn this on'],
+                ['Status', site.dot_status ? <Badge tone={/active|issued/i.test(site.dot_status) ? 'ok' : /off/i.test(site.dot_status) ? 'neutral' : 'warn'} icon={Lock}>{/^error/.test(site.dot_status) ? 'Error' : site.dot_status}</Badge> : '–'],
               ]}
             />
+            {site.dot_status?.startsWith('error') && site.settings.dot_enabled && (
+              <Callout
+                kind="warn"
+                title="The certificate couldn’t be issued yet"
+                action={<Button size="sm" icon={RotateCw} onClick={() => act(() => api.sites.retryDot(site.id), { success: 'Retrying. This usually takes a couple of minutes.', invalidate: [`site:${site.id}`] })}>Retry now</Button>}
+              >
+                {site.dot_status.replace(/^error:\s*/, '')} Screens retries automatically every 30 minutes.
+              </Callout>
+            )}
             {s.dot_enabled !== site.settings.dot_enabled && s.dot_enabled && (
               <Callout kind="info">After saving, Screens publishes the hostname and gets a certificate for it. This usually takes a couple of minutes.</Callout>
             )}

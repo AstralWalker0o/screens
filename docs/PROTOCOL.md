@@ -223,7 +223,7 @@ The agent runs the stock `adb` server (`adb start-server`, keys in
 {
   "enabled": true,
   "listen": ["0.0.0.0:53"],
-  "dot": { "enabled": false, "listen": ["0.0.0.0:853"], "hostname": "beach.dns.screens.supercluster.au" },
+  "dot": { "enabled": false, "listen": ["0.0.0.0:853"], "hostname": "q4mzt7xk2pa6wd3n.dns.screens.supercluster.au" },
   "upstreams": ["https://1.1.1.1/dns-query", "https://1.0.0.1/dns-query"],
   "block_response": "null",
   "cache": { "enabled": true, "max_entries": 20000, "min_ttl_s": 0, "max_ttl_s": 86400 },

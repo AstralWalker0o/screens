@@ -73,3 +73,12 @@ export function ipInCidr(ip: string, cidr: string): boolean {
   const mask = bits === 0 ? 0 : (~0 << (32 - bits)) >>> 0;
   return ((ipv4Int(ip) & mask) >>> 0) === ((ipv4Int(net) & mask) >>> 0);
 }
+
+const B32 = 'abcdefghijklmnopqrstuvwxyz234567';
+/** Random DNS label for a site's DoT hostname (16 × base32 = 80 bits), so site names never reach public DNS or CT logs. */
+export function randomDotLabel(): string {
+  let s = '';
+  for (const b of crypto.getRandomValues(new Uint8Array(16))) s += B32[b & 31];
+  return s;
+}
+export const isDotLabel = (l: string) => /^[a-z2-7]{16}$/.test(l);
