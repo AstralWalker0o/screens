@@ -17,14 +17,23 @@ export const Input = forwardRef<HTMLInputElement, InputHTMLAttributes<HTMLInputE
       </div>
     );
   }
-  return <input ref={ref} className={cn(control, 'h-8', mono && 'font-mono text-[13px]', className)} {...rest} />;
+  // Width/margin classes go on a wrapper so they don't fight the control's own w-full.
+  if (className) {
+    return (
+      <div className={cn('min-w-0', className)}>
+        <input ref={ref} className={cn(control, 'h-8', mono && 'font-mono text-[13px]')} {...rest} />
+      </div>
+    );
+  }
+  return <input ref={ref} className={cn(control, 'h-8', mono && 'font-mono text-[13px]')} {...rest} />;
 });
 
 export const Textarea = forwardRef<HTMLTextAreaElement, TextareaHTMLAttributes<HTMLTextAreaElement> & { mono?: boolean }>(function Textarea(
   { className, mono, ...rest },
   ref,
 ) {
-  return <textarea ref={ref} className={cn(control, 'min-h-20 py-2', mono && 'font-mono text-[13px]', className)} {...rest} />;
+  const custom = className?.includes('min-h-');
+  return <textarea ref={ref} className={cn(control, !custom && 'min-h-20', 'py-2', mono && 'font-mono text-[13px]', className)} {...rest} />;
 });
 
 export const Select = forwardRef<HTMLSelectElement, SelectHTMLAttributes<HTMLSelectElement>>(function Select({ className, children, ...rest }, ref) {
@@ -76,8 +85,8 @@ export function Field({ label, hint, children, className, htmlFor, error, option
   );
 }
 
-export function Toggle({ checked, onChange, label, description, disabled, size = 'md', className, id }: {
-  checked: boolean; onChange: (v: boolean) => void; label?: ReactNode; description?: ReactNode; disabled?: boolean; size?: 'sm' | 'md'; className?: string; id?: string;
+export function Toggle({ checked, onChange, label, description, disabled, size = 'md', className, id, ariaLabel }: {
+  checked: boolean; onChange: (v: boolean) => void; label?: ReactNode; description?: ReactNode; disabled?: boolean; size?: 'sm' | 'md'; className?: string; id?: string; ariaLabel?: string;
 }) {
   const autoId = useId();
   const tid = id ?? autoId;
@@ -87,7 +96,7 @@ export function Toggle({ checked, onChange, label, description, disabled, size =
       type="button"
       role="switch"
       aria-checked={checked}
-      aria-label={typeof label === 'string' ? label : undefined}
+      aria-label={ariaLabel ?? (typeof label === 'string' ? label : undefined)}
       disabled={disabled}
       onClick={() => onChange(!checked)}
       className={cn(

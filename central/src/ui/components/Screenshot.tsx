@@ -8,6 +8,7 @@ import { reportError } from '../lib/query';
 import { Button, cn, RelTime } from './ui';
 import { Select } from './forms';
 import { Dialog } from './overlay';
+import { KEY_EVENT } from './Remote';
 
 function useScreenshot(device: Device) {
   const [src, setSrc] = useState<string | null>(null);
@@ -84,6 +85,23 @@ export function ScreenshotPane({ device }: { device: Device }) {
   useInterval(() => {
     if (!document.hidden && !offline) void take(true);
   }, every ? every * 1000 : null);
+
+  // After remote presses, grab a fresh picture (debounced) so the pane follows along.
+  const hasShot = !!src;
+  useEffect(() => {
+    if (!hasShot || every) return;
+    let t: ReturnType<typeof setTimeout> | undefined;
+    const onKey = (e: Event) => {
+      if ((e as CustomEvent).detail !== device.id) return;
+      if (t) clearTimeout(t);
+      t = setTimeout(() => void take(true), 650);
+    };
+    window.addEventListener(KEY_EVENT, onKey);
+    return () => {
+      window.removeEventListener(KEY_EVENT, onKey);
+      if (t) clearTimeout(t);
+    };
+  }, [hasShot, every, device.id, take]);
 
   const onClick = async (e: MouseEvent<HTMLDivElement>) => {
     if (!canTap || !src) return;

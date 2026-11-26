@@ -1,7 +1,7 @@
 import { createBrowserRouter, Outlet, type RouteObject } from 'react-router';
 import type { ComponentType } from 'react';
 import { AppShell } from './layout/AppShell';
-import { RouteError, NotFound } from './pages/NotFound';
+import { RouteError, NotFound, PageLoading } from './pages/NotFound';
 
 // Each page is its own chunk, loaded on first visit.
 const page = (load: () => Promise<{ default: ComponentType }>): RouteObject['lazy'] => async () => ({ Component: (await load()).default });
@@ -14,6 +14,7 @@ export const router = createBrowserRouter([
       {
         element: <Outlet />,
         errorElement: <RouteError />,
+        hydrateFallbackElement: <PageLoading />,
         children: [
           { index: true, lazy: page(() => import('./pages/Overview')) },
           { path: 'sites', lazy: page(() => import('./pages/Sites')) },

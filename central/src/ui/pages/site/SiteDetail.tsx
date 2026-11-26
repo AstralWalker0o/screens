@@ -38,7 +38,7 @@ export default function SiteDetail() {
         back={{ to: '/sites', label: 'Sites' }}
         icon={Building2}
         title={s?.name ?? '…'}
-        subtitle={s ? `${s.client_name ?? ''}` : ' '}
+        subtitle={s?.client_name ? `Client: ${s.client_name}` : ' '}
         meta={
           s && (
             <>

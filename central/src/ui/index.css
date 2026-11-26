@@ -182,6 +182,10 @@
   .tnum {
     font-variant-numeric: tabular-nums;
   }
+  /* Let grid/flex children shrink below their content (long domains, package names). */
+  .grid > * {
+    min-width: 0;
+  }
 }
 
 @keyframes pulse-soft {

@@ -6,7 +6,7 @@ import type {
   Alert, Apk, AppPolicy, AppSettings, AuditEntry, Automation, Client, CommandRequest, CommandResult, Device,
   DeviceApp, DevicePrivacy, Discovered, DnsDomainStat, DnsList, DnsLogEntry, DnsPolicyBuild, DnsRule, DnsSummary,
   EnrollResult, Gateway, GatewayInterface, Job, LiveEvent, MdnsConfig, MdnsStatus, Me, Overview, PrivacyOverview,
-  SiteDetail, SiteKind, SiteSummary, DeviceKind,
+  SiteDetail, SiteKind, SiteSummary, DeviceKind, BulkCommandRequest, BulkCommandResult, SiteSettings, GuestSettings,
 } from '../shared/types';
 
 export class ApiError extends Error {
@@ -129,7 +129,8 @@ export const api = {
     list: (client_id?: string) => get<SiteSummary[]>(`/api/sites${qs({ client_id })}`),
     get: (id: string) => get<SiteDetail>(`/api/sites/${enc(id)}`),
     create: (b: { client_id: string; name: string; kind: SiteKind; timezone: string; address?: string }) => post<SiteDetail>('/api/sites', b),
-    update: (id: string, b: Partial<Omit<SiteDetail, 'settings'>> & { settings?: Partial<SiteDetail['settings']> }) =>
+    /** Partial update; `settings` (and `settings.guest`) merge server-side. */
+    update: (id: string, b: Partial<Omit<SiteDetail, 'settings'>> & { settings?: Partial<Omit<SiteSettings, 'guest'>> & { guest?: Partial<GuestSettings> } }) =>
       patch<SiteDetail>(`/api/sites/${enc(id)}`, b),
     remove: (id: string) => del<Ok>(`/api/sites/${enc(id)}`),
     enroll: (id: string) => post<EnrollResult>(`/api/sites/${enc(id)}/enroll`),
@@ -154,6 +155,7 @@ export const api = {
     remove: (id: string) => del<Ok>(`/api/devices/${enc(id)}`),
     command: (id: string, command: string, args?: Record<string, unknown>) =>
       post<CommandResult>(`/api/devices/${enc(id)}/command`, { command, args } satisfies CommandRequest),
+    bulk: (b: BulkCommandRequest) => post<BulkCommandResult>('/api/devices/bulk', b),
     apps: (id: string) => get<DeviceApp[]>(`/api/devices/${enc(id)}/apps`),
     privacy: (id: string) => get<DevicePrivacy>(`/api/devices/${enc(id)}/privacy`),
     setChecklist: (id: string, key: string, done: boolean) => put<Ok>(`/api/devices/${enc(id)}/privacy/checklist`, { key, done }),

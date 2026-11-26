@@ -2,7 +2,7 @@ import { Link } from 'react-router';
 import { Check, ChevronRight, ShieldAlert, TriangleAlert } from 'lucide-react';
 import type { Alert, Job, PrivacyOverview, SiteSummary } from '../../shared/types';
 import { fmtCompact, fmtPct } from '../lib/format';
-import { GRADE, gradeFor, jobLabel, KIND, SITE_KIND, type Grade } from '../lib/labels';
+import { actorLabel, GRADE, gradeFor, jobLabel, KIND, SITE_KIND, type Grade } from '../lib/labels';
 import { Badge, Button, RelTime, StatusText } from './ui';
 import { GatewayBadge, GradeBadge, JobStatusBadge, KindIcon, SeverityBadge } from './status';
 import { Meter } from './charts';
@@ -41,11 +41,11 @@ export function JobRow({ job: j }: { job: Job }) {
     <li className="flex items-center gap-3 py-2.5">
       <div className="min-w-0 flex-1">
         <p className="truncate text-sm text-fg">
-          <span className="font-medium">{jobLabel(j.kind)}</span>
+          <span className="font-medium">{jobLabel(j.kind, j.params)}</span>
           {target && <span className="text-muted"> — {target}</span>}
         </p>
         <p className="mt-0.5 truncate text-xs text-subtle">
-          {j.actor === 'automation' ? 'by an automation' : j.actor ? `by ${j.actor}` : ''} · <RelTime ts={j.created_at} />
+          {j.actor ? `by ${actorLabel(j.actor)} · ` : ''}<RelTime ts={j.created_at} />
         </p>
       </div>
       <JobStatusBadge status={j.status} />

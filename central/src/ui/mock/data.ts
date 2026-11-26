@@ -3,7 +3,7 @@
 
 import type {
   Alert, Apk, AppPolicy, AppSettings, AuditEntry, Automation, ChecklistItem, Client, Device, DeviceApp, DeviceCapability,
-  Discovered, DnsList, DnsPolicyBuild, DnsRule, Gateway, Job, MdnsConfig, MdnsService, MicUsage, PrivacyFactor, SiteDetail,
+  Discovered, DnsList, DnsPolicyBuild, DnsRule, Gateway, GuestSettings, Job, MdnsConfig, MdnsService, MicUsage, PrivacyFactor, SiteDetail,
   SiteSettings,
 } from '../../shared/types';
 import { hex } from './rand';
@@ -27,9 +27,18 @@ const baseSettings = (over: Partial<SiteSettings> = {}): SiteSettings => ({
   unknown_clients: 'monitor',
   scan_cidrs: [],
   dot_enabled: false,
-  guest: { clear_packages: [], go_home: true, reboot: false },
+  guest: defaultGuest(),
   ...over,
 });
+
+export function defaultGuest(over: Partial<GuestSettings> = {}): GuestSettings {
+  return {
+    clear_packages: [], go_home: true, reboot: false, show_welcome_after_reset: false,
+    welcome: { enabled: false, show_on_boot: true, title: 'Welcome', message: '', wifi: null, sections: [], contact: '', accent: '#4F8EF7' },
+    kiosk: { enabled: false, allowed: [], pinned: [], force_home: false, pin_set: false },
+    ...over,
+  };
+}
 
 const iface = (name: string, mac: string, addrs: string[], multicast = true, up = true) => ({ name, mac, addrs, up, multicast });
 
@@ -84,7 +93,23 @@ export const sites: Omit<SiteDetail, 'devices' | 'gateway' | 'gateway_status' | 
     created_at: NOW - 58 * D, notes: 'Lockbox code in 1Password. Router is in the laundry cupboard.',
     settings: baseSettings({
       monitor_days: 3, unknown_clients: 'enforce',
-      guest: { clear_packages: ['com.netflix.ninja', 'au.com.stan.and', 'com.google.android.youtube.tv', 'com.disney.disneyplus', 'com.amazon.amazonvideo.livingroom', 'com.spotify.tv.android'], go_home: true, reboot: true },
+      guest: defaultGuest({
+        clear_packages: ['com.netflix.ninja', 'au.com.stan.and', 'com.google.android.youtube.tv', 'com.disney.disneyplus', 'com.amazon.amazonvideo.livingroom', 'com.spotify.tv.android'],
+        go_home: true, reboot: true, show_welcome_after_reset: true,
+        welcome: {
+          enabled: true, show_on_boot: true, title: 'Welcome to Beach House', message: 'We hope you have a wonderful stay. Everything you need is below.',
+          wifi: { ssid: 'BeachHouse-Guest', password: 'sunny-days-2026', security: 'WPA' },
+          sections: [
+            { title: 'Checkout', body: 'Please check out by 11 am. Leave keys in the lockbox.' },
+            { title: 'TV tips', body: 'Press Home to come back here. Your sign-ins are cleared after you leave.' },
+          ],
+          contact: 'Questions? Text the Coastal Rentals team on 0400 000 000', accent: '#4F8EF7',
+        },
+        kiosk: {
+          enabled: true, allowed: ['com.netflix.ninja', 'com.google.android.youtube.tv', 'au.com.stan.and', 'com.disney.disneyplus', 'com.amazon.amazonvideo.livingroom', 'com.spotify.tv.android', 'au.net.abc.iview'],
+          pinned: ['com.netflix.ninja', 'com.google.android.youtube.tv', 'au.com.stan.and'], force_home: false, pin_set: true,
+        },
+      }),
     }),
     dot_hostname: 'beach-house.dns.screens.supercluster.au', dot_status: 'Off',
   },
@@ -94,7 +119,7 @@ export const sites: Omit<SiteDetail, 'devices' | 'gateway' | 'gateway_status' | 
   },
 ];
 
-const ANDROID_CAPS: DeviceCapability[] = ['remote', 'text', 'apps', 'launch', 'install', 'uninstall', 'disable', 'clear', 'screenshot', 'tap', 'shell', 'reboot', 'power', 'volume', 'private_dns', 'media', 'toast', 'guest_reset'];
+const ANDROID_CAPS: DeviceCapability[] = ['remote', 'text', 'apps', 'launch', 'install', 'uninstall', 'disable', 'clear', 'screenshot', 'tap', 'shell', 'reboot', 'power', 'volume', 'private_dns', 'media', 'toast', 'guest_reset', 'launcher'];
 const SAMSUNG_CAPS: DeviceCapability[] = ['remote', 'text', 'apps', 'launch', 'power', 'volume', 'guest_reset'];
 const LG_CAPS: DeviceCapability[] = ['remote', 'text', 'apps', 'launch', 'power', 'volume', 'toast'];
 const SONOS_CAPS: DeviceCapability[] = ['volume', 'media', 'group'];
@@ -128,15 +153,16 @@ export const devices: Device[] = [
     manufacturer: 'NVIDIA', model: 'SHIELD Android TV Pro', os_version: 'Android 11 (Shield 9.2.0)', serial: '1323219012345',
     status: 'online', power: 'on', current_app: 'Plex', last_seen: NOW - 15 * S, tags: ['streamer', 'main'],
     dns_mode: 'enforce', dns_policy: 'balanced', private_dns: 'home.dns.screens.supercluster.au', privacy_score: 86,
-    facts: { sdk: 30, build: '9.2.0', screen: '3840×2160', package: 'com.plexapp.android' },
+    facts: { sdk: 30, build: '9.2.0', screen: '3840×2160', package: 'com.plexapp.android', launcher: { installed: false, checked_at: NOW - 1 * D } },
   }),
   dev({
     id: 'dev_sonos_lr', site_id: 's_home', kind: 'sonos', name: 'Living Room', room: 'Living room', ip: '10.0.20.60', mac: '48:a6:b8:72:10:3c', port: 1400,
     manufacturer: 'Sonos', model: 'Sonos Arc', os_version: 'S2 · 17.2', status: 'online', power: 'on', current_app: 'Spotify', last_seen: NOW - 9 * S, tags: ['audio'],
     dns_mode: 'enforce', dns_policy: 'balanced', privacy_score: 88,
     facts: {
-      now_playing: { title: 'Midnight City', artist: 'M83', album: 'Hurry Up, We’re Dreaming', source: 'Spotify', duration_s: 243, position_s: 87 },
-      playback: 'PLAYING', volume: 28, muted: false, led: true, group_coordinator_id: 'dev_sonos_lr', group_members: ['dev_sonos_lr', 'dev_sonos_kitchen'],
+      uuid: 'RINCON_48A6B872103C01400', room: 'Living Room', model_number: 'S19', display_version: '17.2', led: true,
+      now_playing: { state: 'PLAYING', title: 'Midnight City', artist: 'M83', album: 'Hurry Up, We’re Dreaming', volume: 28, muted: false, source: 'Spotify', duration_s: 243, position_s: 87 },
+      group: { coordinator: 'RINCON_48A6B872103C01400', is_coordinator: true, members: [{ uuid: 'RINCON_48A6B872103C01400', name: 'Living Room', ip: '10.0.20.60' }, { uuid: 'RINCON_48A6B89C44D101400', name: 'Kitchen', ip: '10.0.20.61' }] },
     },
   }),
   dev({
@@ -144,8 +170,9 @@ export const devices: Device[] = [
     manufacturer: 'Sonos', model: 'Sonos Era 100', os_version: 'S2 · 17.2', status: 'online', power: 'on', current_app: 'Spotify', last_seen: NOW - 9 * S, tags: ['audio'],
     dns_mode: 'enforce', dns_policy: 'balanced', privacy_score: 92,
     facts: {
-      now_playing: { title: 'Midnight City', artist: 'M83', album: 'Hurry Up, We’re Dreaming', source: 'Spotify', duration_s: 243, position_s: 87 },
-      playback: 'PLAYING', volume: 22, muted: false, led: false, group_coordinator_id: 'dev_sonos_lr', group_members: ['dev_sonos_lr', 'dev_sonos_kitchen'],
+      uuid: 'RINCON_48A6B89C44D101400', room: 'Kitchen', model_number: 'S39', display_version: '17.2', led: false,
+      now_playing: { state: 'PLAYING', title: 'Midnight City', artist: 'M83', album: 'Hurry Up, We’re Dreaming', volume: 22, muted: false, source: 'Spotify', duration_s: 243, position_s: 87 },
+      group: { coordinator: 'RINCON_48A6B872103C01400', is_coordinator: false, members: [{ uuid: 'RINCON_48A6B872103C01400', name: 'Living Room', ip: '10.0.20.60' }, { uuid: 'RINCON_48A6B89C44D101400', name: 'Kitchen', ip: '10.0.20.61' }] },
     },
   }),
   dev({
@@ -164,13 +191,13 @@ export const devices: Device[] = [
     id: 'dev_beach_shield', site_id: 's_beach', kind: 'android', name: 'Lounge Shield', room: 'Lounge', ip: '10.1.20.31', mac: '00:04:4b:a1:0c:73', port: 5555,
     manufacturer: 'NVIDIA', model: 'SHIELD Android TV', os_version: 'Android 11 (Shield 9.2.0)', status: 'online', power: 'on', current_app: 'Stan',
     last_seen: NOW - 12 * S, tags: ['streamer', 'guest'], dns_mode: 'enforce', dns_policy: 'strict', privacy_score: 81,
-    facts: { sdk: 30, build: '9.2.0', screen: '3840×2160', package: 'au.com.stan.and' },
+    facts: { sdk: 30, build: '9.2.0', screen: '3840×2160', package: 'au.com.stan.and', launcher: { installed: true, version: '1.0.2', config_sha: 'a91f0c', is_home: true, checked_at: NOW - 9 * H } },
   }),
   dev({
     id: 'dev_beach_bed_shield', site_id: 's_beach', kind: 'android', name: 'Master Bedroom Shield', room: 'Master bedroom', ip: '10.1.20.32', mac: '00:04:4b:a1:0d:19', port: 5555,
     manufacturer: 'NVIDIA', model: 'SHIELD Android TV', os_version: 'Android 11 (Shield 9.1.1)', status: 'offline', power: null, current_app: null,
     last_seen: NOW - 3 * H - 12 * M, tags: ['streamer', 'guest'], dns_mode: 'enforce', dns_policy: 'strict', privacy_score: 58,
-    facts: { sdk: 30, build: '9.1.1' },
+    facts: { sdk: 30, build: '9.1.1', launcher: { installed: true, version: '1.0.1', config_sha: '77be12', is_home: true, checked_at: NOW - 3 * H - 20 * M } },
   }),
 ];
 

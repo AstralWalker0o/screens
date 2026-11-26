@@ -7,7 +7,7 @@ import type {
   DnsList, EnrollResult, Discovered,
 } from '../../shared/types';
 import * as F from './data';
-import { D, H, NOW, S } from './data';
+import { D, H, M, NOW, S } from './data';
 import { allDomainStats, buildTraffic, makeEntry, resetLiveRng, seedLog, summarize, type SiteCtx } from './dns';
 import { applyKey, applyTap, renderScreen, type ScreenState } from './screens';
 import { between, hex } from './rand';
@@ -175,6 +175,23 @@ function privacyRows(): PrivacyOverview['devices'] {
     .sort((a, b) => a.score - b.score);
 }
 
+function acrByVendor(): PrivacyOverview['acr_by_vendor'] {
+  const label = (domain: string) => (/alphonso|lge\.com/.test(domain) ? 'LG / Alphonso' : /samba\.tv/.test(domain) ? 'Samba TV' : /samsung/.test(domain) ? 'Samsung' : /inscape|vizio/.test(domain) ? 'Inscape (Vizio)' : 'Other');
+  const m = new Map<string, { vendor: string; attempts: number; blocked: number; devices: Set<string> }>();
+  for (const d of db.devices) {
+    for (const st of allDomainStats(traffic, [d], db.rules)) {
+      if (st.category !== 'acr') continue;
+      const v = label(st.domain);
+      const e = m.get(v) ?? { vendor: v, attempts: 0, blocked: 0, devices: new Set<string>() };
+      e.attempts += st.queries;
+      e.blocked += st.blocked;
+      e.devices.add(d.id);
+      m.set(v, e);
+    }
+  }
+  return [...m.values()].map((e) => ({ vendor: e.vendor, attempts: e.attempts, blocked: e.blocked, devices: e.devices.size })).sort((a, b2) => b2.attempts - a.attempts);
+}
+
 function overview(): Overview {
   const byKind: Partial<Record<DeviceKind, number>> = {};
   for (const d of db.devices) byKind[d.kind] = (byKind[d.kind] ?? 0) + 1;
@@ -221,7 +238,19 @@ const NEEDS: Record<string, Device['capabilities'][number] | undefined> = {
   stop: 'clear', clear: 'clear', disable: 'disable', enable: 'disable', uninstall: 'uninstall', install: 'install', play_store: 'install',
   screenshot: 'screenshot', shell: 'shell', private_dns: 'private_dns', media: 'media', group: 'group', ungroup: 'group', toast: 'toast',
   guest_reset: 'guest_reset', power_on: 'power', power_off: 'power',
+  launcher_install: 'launcher', launcher_config: 'launcher', launcher_status: 'launcher', launcher_remove: 'launcher', welcome_show: 'launcher',
+  adb_pair: 'shell', revoke_permission: 'disable', grant_permission: 'disable', debloat: 'disable', input: 'remote', favorites: 'media', play_favorite: 'media', eq: 'volume', sleep_timer: 'media',
 };
+const KIND_ONLY: Record<string, DeviceKind> = { input: 'samsung', favorites: 'sonos', play_favorite: 'sonos', eq: 'sonos', sleep_timer: 'sonos', adb_pair: 'android' };
+const revoked = new Map<string, boolean>();
+const SONOS_FAVORITES = [
+  { title: 'triple j', uri: 'x-sonosapi-stream:s14986?sid=254&flags=8224&sn=0', meta: '<DIDL-Lite/>', kind: 'radio' },
+  { title: 'Double J', uri: 'x-sonosapi-stream:s148587?sid=254&flags=8224&sn=0', meta: '<DIDL-Lite/>', kind: 'radio' },
+  { title: 'ABC Classic', uri: 'x-sonosapi-stream:s17219?sid=254&flags=8224&sn=0', meta: '<DIDL-Lite/>', kind: 'radio' },
+  { title: 'Dinner Jazz', uri: 'x-rincon-cpcontainer:1006206cspotify%3aplaylist%3a37i9dQZF1DX4xuWVBs4FgJ', meta: '<DIDL-Lite/>', kind: 'playlist' },
+  { title: 'Discover Weekly', uri: 'x-rincon-cpcontainer:1006206cspotify%3aplaylist%3a37i9dQZEVXcJ', meta: '<DIDL-Lite/>', kind: 'playlist' },
+  { title: 'Weightless — Marconi Union', uri: 'x-sonos-spotify:spotify%3atrack%3a6kkwzB6hXLIONkEk9JciA6', meta: '<DIDL-Lite/>', kind: 'track' },
+];
 
 const WHY_NOT: Partial<Record<DeviceKind, string>> = {
   samsung: 'Samsung TVs only accept remote keys, text and app launching over the network.',
@@ -248,13 +277,14 @@ function shellOut(cmd: string, d: Device): { stdout: string; exit_code: number }
 
 async function command(d: Device, cmd: string, args: Record<string, unknown> = {}): Promise<CommandResult> {
   const need = NEEDS[cmd];
+  if (KIND_ONLY[cmd] && d.kind !== KIND_ONLY[cmd]) throw err(400, 'not_supported', `${d.name} can’t do that. ${WHY_NOT[d.kind] ?? ''}`.trim());
   if (need && !d.capabilities.includes(need)) {
     throw err(400, 'not_supported', `${d.name} can’t do that. ${WHY_NOT[d.kind] ?? ''}`.trim());
   }
   if (d.status === 'offline' && cmd !== 'power_on') {
     throw err(409, 'device_offline', `${d.name} is offline. Check it has power and is connected to the network.`);
   }
-  if (d.status === 'pairing' && !['pair', 'refresh'].includes(cmd)) {
+  if (d.status === 'pairing' && !['pair', 'refresh', 'adb_pair'].includes(cmd)) {
     throw err(409, 'not_paired', `${d.name} is waiting for someone to press “Allow” on the TV. Accept the prompt with the TV remote, then try again.`);
   }
   const job = (data?: unknown): CommandResult => ({ ok: true, data, job_id: addJob(`command:${cmd}`, { site_id: d.site_id, device_id: d.id, params: args, result: data }).id });
@@ -302,14 +332,18 @@ async function command(d: Device, cmd: string, args: Record<string, unknown> = {
       setTimeout(() => { d.status = 'online'; d.last_seen = Date.now(); }, 9000);
       return job();
     case 'volume': {
-      const cur = Number(d.facts.volume ?? 20);
-      const level = args.level != null ? Number(args.level) : cur + Number(args.delta ?? 0);
-      d.facts.volume = Math.max(0, Math.min(100, Math.round(level)));
-      return { ok: true, data: { volume: d.facts.volume } };
+      const np = (d.facts.now_playing ?? {}) as Record<string, unknown>;
+      const cur = Number(np.volume ?? d.facts.volume ?? 20);
+      const level = Math.max(0, Math.min(100, Math.round(args.level != null ? Number(args.level) : cur + Number(args.delta ?? 0))));
+      if (d.kind === 'sonos') d.facts.now_playing = { ...np, volume: level };
+      else d.facts.volume = level;
+      return { ok: true, data: { volume: level } };
     }
-    case 'mute':
-      d.facts.muted = !!args.mute;
-      return { ok: true, data: { muted: d.facts.muted } };
+    case 'mute': {
+      if (d.kind === 'sonos') d.facts.now_playing = { ...(d.facts.now_playing as object), muted: !!args.mute };
+      else d.facts.muted = !!args.mute;
+      return { ok: true, data: { muted: !!args.mute } };
+    }
     case 'apps':
       return job(db.apps[d.id] ?? []);
     case 'launch': {
@@ -366,8 +400,12 @@ async function command(d: Device, cmd: string, args: Record<string, unknown> = {
     }
     case 'media': {
       const a = String(args.action);
-      if (a === 'play') d.facts.playback = 'PLAYING';
-      if (a === 'pause' || a === 'stop') d.facts.playback = 'PAUSED_PLAYBACK';
+      const coordUuid = (d.facts.group as { coordinator?: string } | undefined)?.coordinator;
+      const groupDevs = db.devices.filter((o) => o.kind === 'sonos' && (o.facts.group as { coordinator?: string } | undefined)?.coordinator === coordUuid);
+      const np = { ...((d.facts.now_playing ?? {}) as Record<string, unknown>) };
+      if (a === 'play') np.state = 'PLAYING';
+      if (a === 'pause') np.state = 'PAUSED_PLAYBACK';
+      if (a === 'stop') np.state = 'STOPPED';
       if (a === 'next' || a === 'prev') {
         const tracks = [
           { title: 'Midnight City', artist: 'M83', album: 'Hurry Up, We’re Dreaming' },
@@ -375,32 +413,30 @@ async function command(d: Device, cmd: string, args: Record<string, unknown> = {
           { title: 'Innerbloom', artist: 'RÜFÜS DU SOL', album: 'Bloom' },
           { title: 'Lost in Yesterday', artist: 'Tame Impala', album: 'The Slow Rush' },
         ];
-        const np = (d.facts.now_playing ?? {}) as Record<string, unknown>;
         const i = Math.max(0, tracks.findIndex((t) => t.title === np.title));
-        const n = tracks[(i + (a === 'next' ? 1 : tracks.length - 1)) % tracks.length];
-        d.facts.now_playing = { ...np, ...n, position_s: 0, duration_s: 200 + n.title.length * 4 };
-        d.facts.playback = 'PLAYING';
-        for (const o of db.devices) if (o.kind === 'sonos' && o.facts.group_coordinator_id === d.facts.group_coordinator_id) o.facts.now_playing = d.facts.now_playing;
+        Object.assign(np, tracks[(i + (a === 'next' ? 1 : tracks.length - 1)) % tracks.length], { position_s: 0, duration_s: 214, state: 'PLAYING' });
+      }
+      for (const o of groupDevs.length ? groupDevs : [d]) {
+        const own = (o.facts.now_playing ?? {}) as Record<string, unknown>;
+        o.facts.now_playing = { ...np, volume: own.volume, muted: own.muted };
       }
       return { ok: true };
     }
     case 'group': {
       const coord = db.devices.find((x) => x.id === args.coordinator_id);
-      if (!coord) throw notFound('Speaker');
-      d.facts.group_coordinator_id = coord.id;
-      d.facts.now_playing = coord.facts.now_playing;
-      d.facts.playback = coord.facts.playback;
-      const members = db.devices.filter((x) => x.kind === 'sonos' && x.facts.group_coordinator_id === coord.id).map((x) => x.id);
-      for (const id of members) db.devices.find((x) => x.id === id)!.facts.group_members = members;
+      const uuid = coord?.facts.uuid as string | undefined;
+      if (!coord || !uuid) throw err(400, 'bad_args', 'Unknown coordinator speaker (refresh it first)');
+      const coordGroup = coord.facts.group as { coordinator: string };
+      const leader = coordGroup?.coordinator ?? uuid;
+      d.facts.group = { coordinator: leader, is_coordinator: false, members: [] };
+      d.facts.now_playing = { ...(coord.facts.now_playing as object), volume: (d.facts.now_playing as Record<string, unknown>)?.volume, muted: false };
+      syncGroups();
       return { ok: true };
     }
     case 'ungroup': {
-      const old = d.facts.group_coordinator_id;
-      d.facts.group_coordinator_id = d.id;
-      d.facts.group_members = [d.id];
-      for (const o of db.devices) {
-        if (o.kind === 'sonos' && o.id !== d.id && o.facts.group_coordinator_id === old) o.facts.group_members = db.devices.filter((x) => x.facts.group_coordinator_id === old).map((x) => x.id);
-      }
+      d.facts.group = { coordinator: d.facts.uuid, is_coordinator: true, members: [] };
+      d.facts.now_playing = { ...(d.facts.now_playing as object), state: 'STOPPED' };
+      syncGroups();
       return { ok: true };
     }
     case 'led':
@@ -410,8 +446,114 @@ async function command(d: Device, cmd: string, args: Record<string, unknown> = {
       return job();
     case 'guest_reset':
       return job({ detail: d.kind === 'android' ? 'Cleared apps and went home' : 'Returned to Home' });
+    case 'adb_pair': {
+      const code = String(args.code ?? '');
+      const port = Number(args.port);
+      if (!/^\d{6}$/.test(code) || !(port > 0 && port < 65536)) throw err(400, 'bad_args', 'Enter the 6-digit pairing code and the pairing port shown on the TV');
+      await sleep(1500);
+      if (code === '000000') return { ok: false, error: 'Pairing failed: Failed: Wrong password or connection was dropped.', data: { ok: false, detail: 'Pairing failed' } };
+      d.status = 'online';
+      return job({ ok: true, detail: 'Paired. Screens will now connect using the wireless debugging port.' });
+    }
+    case 'revoke_permission':
+    case 'grant_permission': {
+      const perm = { microphone: 'android.permission.RECORD_AUDIO', camera: 'android.permission.CAMERA', location: 'android.permission.ACCESS_FINE_LOCATION', contacts: 'android.permission.READ_CONTACTS' }[String(args.permission)];
+      if (!perm) throw err(400, 'bad_args', 'permission must be one of microphone, camera, location, contacts');
+      const a = (db.apps[d.id] ?? []).find((x) => x.package === args.package);
+      if (!a) throw notFound('App');
+      await sleep(500);
+      const revoke = cmd === 'revoke_permission';
+      revoked.set(`${d.id}|${a.package}|${perm}`, revoke);
+      return job({ ok: true, permission: args.permission, mode: revoke ? 'ignore' : 'allow' });
+    }
+    case 'debloat': {
+      await sleep(1600);
+      const catalogue = ['com.google.android.tvrecommendations', 'com.nvidia.tegrazone3', 'com.nvidia.diagtools', 'tv.pluto.android', 'com.google.android.youtube.tvmusic', 'com.amazon.amazonvideo.livingroom.ads', 'com.nvidia.shieldtech.accessoryserver'];
+      const list = db.apps[d.id] ?? [];
+      const disabled: string[] = [];
+      const failed: string[] = [];
+      const skipped: string[] = [];
+      for (const p of catalogue) {
+        const a = list.find((x) => x.package === p);
+        if (!a || !a.enabled) skipped.push(p);
+        else if (p === 'com.nvidia.tegrazone3') failed.push(p);
+        else {
+          a.enabled = false;
+          disabled.push(p);
+        }
+      }
+      const res = { ok: failed.length === 0, disabled, failed, skipped };
+      addJob('debloat', { site_id: d.site_id, device_id: d.id, status: res.ok ? 'ok' : 'error', result: res });
+      return { ok: res.ok, data: res, error: undefined };
+    }
+    case 'input': {
+      const src = String(args.source ?? '').toUpperCase();
+      if (!['TV', 'HDMI1', 'HDMI2', 'HDMI3', 'HDMI4', 'SOURCE'].includes(src)) throw err(400, 'bad_args', 'source must be TV, HDMI1–HDMI4 or SOURCE');
+      if (src !== 'SOURCE') d.current_app = src === 'TV' ? 'Live TV' : src.replace('HDMI', 'HDMI ');
+      return { ok: true };
+    }
+    case 'favorites':
+      await sleep(300);
+      return { ok: true, data: SONOS_FAVORITES };
+    case 'play_favorite': {
+      const fav = SONOS_FAVORITES.find((f) => f.uri === args.uri);
+      if (!fav) throw err(400, 'bad_args', 'uri (from favorites) required');
+      const np = { ...((d.facts.now_playing ?? {}) as Record<string, unknown>), state: 'PLAYING', title: fav.title, artist: fav.kind === 'radio' ? 'Live radio' : 'Sonos favourite', album: '', source: fav.kind === 'radio' ? 'TuneIn' : 'Spotify', position_s: 0, duration_s: fav.kind === 'radio' ? undefined : 240 };
+      const coordUuid = (d.facts.group as { coordinator?: string } | undefined)?.coordinator;
+      for (const o of db.devices.filter((x) => x.kind === 'sonos' && (x.facts.group as { coordinator?: string } | undefined)?.coordinator === coordUuid)) {
+        const own = (o.facts.now_playing ?? {}) as Record<string, unknown>;
+        o.facts.now_playing = { ...np, volume: own.volume, muted: own.muted };
+      }
+      return { ok: true };
+    }
+    case 'eq': {
+      const cur = (d.facts.eq ?? { bass: 0, treble: 0, loudness: true }) as Record<string, unknown>;
+      const clamp = (v: unknown) => Math.round(Math.min(10, Math.max(-10, Number(v))));
+      const next: Record<string, unknown> = { ...cur };
+      if (args.bass !== undefined) next.bass = clamp(args.bass);
+      if (args.treble !== undefined) next.treble = clamp(args.treble);
+      if (args.loudness !== undefined) next.loudness = !!args.loudness;
+      const soundbar = /arc|beam|ray|playbar|playbase/i.test(d.model ?? '');
+      if (args.night_mode !== undefined) next.night_mode = soundbar ? !!args.night_mode : 'not supported';
+      if (args.speech !== undefined) next.speech = soundbar ? !!args.speech : 'not supported';
+      d.facts.eq = next;
+      return { ok: true, data: { ok: true, eq: next } };
+    }
+    case 'sleep_timer': {
+      const mins = Math.round(Math.min(180, Math.max(0, Number(args.minutes) || 0)));
+      d.facts.sleep_timer_until = mins ? Date.now() + mins * M : null;
+      return { ok: true, data: { ok: true, minutes: mins } };
+    }
+    case 'launcher_install': {
+      await sleep(2200);
+      d.facts.launcher = { installed: true, version: '1.0.2', config_sha: hex(6), is_home: true, checked_at: Date.now() };
+      return job({ status: d.facts.launcher });
+    }
+    case 'launcher_config':
+      if (!(d.facts.launcher as { installed?: boolean } | undefined)?.installed) throw err(409, 'launcher_missing', `The Screens Launcher isn’t installed on ${d.name}. Install it first.`);
+      await sleep(600);
+      d.facts.launcher = { ...(d.facts.launcher as object), config_sha: hex(6), checked_at: Date.now() };
+      return job({ status: d.facts.launcher });
+    case 'launcher_status':
+      return job({ status: d.facts.launcher ?? { installed: false, checked_at: Date.now() } });
+    case 'launcher_remove':
+      await sleep(1200);
+      d.facts.launcher = { installed: false, checked_at: Date.now() };
+      return job({ status: d.facts.launcher });
+    case 'welcome_show':
+      if (!(d.facts.launcher as { installed?: boolean } | undefined)?.installed) throw err(409, 'launcher_missing', `The Screens Launcher isn’t installed on ${d.name}.`);
+      return job();
     default:
       throw err(400, 'unknown_command', `Unknown command “${cmd}”.`);
+  }
+}
+
+function syncGroups() {
+  const sonos = db.devices.filter((x) => x.kind === 'sonos');
+  for (const o of sonos) {
+    const g = o.facts.group as { coordinator: string };
+    const members = sonos.filter((x) => (x.facts.group as { coordinator: string }).coordinator === g.coordinator).map((x) => ({ uuid: x.facts.uuid as string, name: x.name, ip: x.ip ?? '' }));
+    o.facts.group = { coordinator: g.coordinator, is_coordinator: g.coordinator === o.facts.uuid, members };
   }
 }
 
@@ -478,7 +620,7 @@ on('POST', '/api/sites', (c) => {
   const s = {
     id: `s_${hex(6)}`, client_id: body.client_id, name: body.name.trim(), slug, kind: body.kind, timezone: body.timezone || 'Australia/Sydney', address: body.address ?? null,
     created_at: Date.now(), notes: null,
-    settings: { monitor_days: db.settings.default_monitor_days, default_policy: db.settings.default_policy, unknown_clients: 'monitor' as const, scan_cidrs: [], dot_enabled: false, guest: { clear_packages: [], go_home: true, reboot: false } },
+    settings: { monitor_days: db.settings.default_monitor_days, default_policy: db.settings.default_policy, unknown_clients: 'monitor' as const, scan_cidrs: [], dot_enabled: false, guest: F.defaultGuest() },
     dot_hostname: null, dot_status: null,
   };
   db.sites.push(s);
@@ -491,7 +633,15 @@ on('PATCH', '/api/sites/:id', (c) => {
   const body = b<Partial<SiteDetail>>(c);
   const { settings, ...rest } = body;
   for (const k of ['name', 'kind', 'timezone', 'address', 'notes'] as const) if (k in rest) (s as Record<string, unknown>)[k] = rest[k];
-  if (settings) s.settings = { ...s.settings, ...settings, guest: { ...s.settings.guest, ...(settings.guest ?? {}) } };
+  if (settings) {
+    const g = settings.guest;
+    let kiosk = s.settings.guest.kiosk;
+    if (g?.kiosk) {
+      const { pin, ...k } = g.kiosk;
+      kiosk = { ...kiosk, ...k, pin_set: pin === undefined ? kiosk.pin_set : pin !== '' };
+    }
+    s.settings = { ...s.settings, ...settings, guest: { ...s.settings.guest, ...(g ?? {}), kiosk } };
+  }
   logAudit('site.update', 'site', s.id, s.id, body);
   return siteDetail(s.id);
 });
@@ -648,6 +798,26 @@ on('POST', '/api/devices/:id/command', async (c) => {
   const { command: cmd, args } = b<{ command: string; args?: Record<string, unknown> }>(c);
   return command(d, cmd, args);
 });
+on('POST', '/api/devices/bulk', async (c) => {
+  const { device_ids, command: cmd, args } = b<{ device_ids: string[]; command: string; args?: Record<string, unknown> }>(c);
+  if (cmd === 'shell') throw err(400, 'bad_request', 'Shell commands can’t be sent in bulk.');
+  await sleep(500);
+  const results = [];
+  for (const id of device_ids ?? []) {
+    const d = db.devices.find((x) => x.id === id);
+    if (!d) {
+      results.push({ device_id: id, ok: false, error: 'Device not found' });
+      continue;
+    }
+    try {
+      const r = await command(d, cmd, args);
+      results.push({ device_id: id, name: d.name, ok: r.ok, data: r.data });
+    } catch (e) {
+      results.push({ device_id: id, name: d.name, ok: false, error: (e as Error).message });
+    }
+  }
+  return { results };
+});
 on('GET', '/api/devices/:id/apps', (c) => db.apps[findDevice(c.params[0]).id] ?? []);
 on('GET', '/api/devices/:id/privacy', (c) => devicePrivacy(findDevice(c.params[0])));
 on('PUT', '/api/devices/:id/privacy/checklist', (c) => {
@@ -667,6 +837,7 @@ on('GET', '/api/privacy', () => {
     devices: privacyRows(),
     fleet: summarize(traffic, db.devices, db.rules),
     new_domains: all.filter((x) => (x.first_seen ?? 0) > Date.now() - 7 * D).sort((a, b2) => (b2.first_seen ?? 0) - (a.first_seen ?? 0)),
+    acr_by_vendor: acrByVendor(),
   };
   return r;
 });

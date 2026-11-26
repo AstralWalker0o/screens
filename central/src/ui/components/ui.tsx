@@ -362,7 +362,7 @@ export const th = 'px-3 py-2 text-left text-xs font-medium text-muted whitespace
 export const td = 'px-3 py-2.5 align-middle';
 
 export function TableWrap({ children, className }: { children: ReactNode; className?: string }) {
-  return <div className={cn('max-w-full overflow-x-auto', className)}>{children}</div>;
+  return <div className={cn('relative max-w-full overflow-x-auto', className)}>{children}</div>;
 }
 
 export function KeyVal({ items, className }: { items: [ReactNode, ReactNode][]; className?: string }) {

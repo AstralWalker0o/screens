@@ -1,0 +1,17 @@
+# Local machine / build output
+local.properties
+.gradle/
+.kotlin/
+build/
+dist/
+captures/
+.idea/
+*.iml
+.cxx/
+.externalNativeBuild/
+
+# Signing material must never be committed
+*.keystore
+*.jks
+*.p12
+keystore.properties

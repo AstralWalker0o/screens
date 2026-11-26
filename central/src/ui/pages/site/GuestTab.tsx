@@ -1,8 +1,11 @@
 import { useEffect, useMemo, useState } from 'react';
 import { BedDouble, Sparkles, CircleCheck, CircleX, Save, CalendarClock, TvMinimalPlay } from 'lucide-react';
-import type { DeviceApp, GuestSettings, SiteDetail } from '../../../shared/types';
+import type { GuestSettings, SiteDetail } from '../../../shared/types';
 import { api, type GuestResetResult } from '../../api';
-import { act, invalidate, useQuery } from '../../lib/query';
+import { act, setQueryData } from '../../lib/query';
+import { KioskCard, LauncherDevicesCard, useSiteApps, WelcomeCard } from './LauncherSettings';
+
+type ResetPrefs = Pick<GuestSettings, 'clear_packages' | 'go_home' | 'reboot'>;
 import { Button, ButtonLink, Callout, Card, CardBody, CardHeader, SectionLabel, StatusText, cn } from '../../components/ui';
 import { Checkbox, ChipsInput, Toggle, isPackage } from '../../components/forms';
 import { ConfirmDialog } from '../../components/overlay';
@@ -25,6 +28,7 @@ export function GuestTab({ site }: { site: SiteDetail }) {
   };
 
   return (
+    <div className="space-y-4">
     <div className="grid gap-4 lg:grid-cols-[minmax(0,1fr)_minmax(0,1fr)]">
       <div className="space-y-4">
         <Card>
@@ -87,6 +91,10 @@ export function GuestTab({ site }: { site: SiteDetail }) {
         </Card>
       </div>
       <GuestSettingsCard site={site} />
+    </div>
+      <LauncherDevicesCard site={site} />
+      <WelcomeCard site={site} />
+      <KioskCard site={site} />
       <ConfirmDialog open={confirm} onClose={() => setConfirm(false)} title="Reset for the next guest?" confirmLabel="Reset now" busy={busy} onConfirm={run}>
         <p>Anyone watching a TV at {site.name} right now will be interrupted, and signed out of the apps being cleared.</p>
       </ConfirmDialog>
@@ -96,24 +104,21 @@ export function GuestTab({ site }: { site: SiteDetail }) {
 
 function GuestSettingsCard({ site }: { site: SiteDetail }) {
   const androids = site.devices.filter((d) => d.kind === 'android');
-  const appsQ = useQuery(androids.length ? `site-apps:${site.id}` : null, async () => {
-    const lists = await Promise.all(androids.map((d) => api.devices.apps(d.id).catch(() => [] as DeviceApp[])));
-    const m = new Map<string, DeviceApp>();
-    for (const l of lists) for (const a of l) if (!a.system) m.set(a.package, a);
-    return [...m.values()].sort((a, b) => (a.label ?? a.package).localeCompare(b.label ?? b.package));
-  });
-  const [g, setG] = useState<GuestSettings>(site.settings.guest);
+  const allApps = useSiteApps(site);
+  const appsQ = { ...allApps, data: allApps.data?.filter((a) => !a.system) };
+  const pick = (x: GuestSettings): ResetPrefs => ({ clear_packages: x.clear_packages, go_home: x.go_home, reboot: x.reboot });
+  const [g, setG] = useState<ResetPrefs>(pick(site.settings.guest));
   const [busy, setBusy] = useState(false);
-  useEffect(() => setG(site.settings.guest), [site.settings.guest]);
-  const dirty = JSON.stringify(g) !== JSON.stringify(site.settings.guest);
+  useEffect(() => setG(pick(site.settings.guest)), [site.settings.guest]);
+  const dirty = JSON.stringify(g) !== JSON.stringify(pick(site.settings.guest));
   const known = useMemo(() => new Set((appsQ.data ?? []).map((a) => a.package)), [appsQ.data]);
   const custom = g.clear_packages.filter((p) => !known.has(p));
 
   const save = async () => {
     setBusy(true);
-    await act(() => api.sites.update(site.id, { settings: { guest: g } }), { success: 'Guest reset settings saved', invalidate: [`site:${site.id}`] });
+    const r = await act(() => api.sites.update(site.id, { settings: { guest: g } }), { success: 'Guest reset settings saved' });
     setBusy(false);
-    invalidate(`site:${site.id}`);
+    if (r) setQueryData(`site:${site.id}`, () => r);
   };
 
   return (
@@ -148,7 +153,7 @@ function GuestSettingsCard({ site }: { site: SiteDetail }) {
         <Toggle checked={g.go_home} onChange={(v) => setG({ ...g, go_home: v })} label="Go to the home screen" description="So the next guest doesn’t walk in to the last show." />
         <Toggle checked={g.reboot} onChange={(v) => setG({ ...g, reboot: v })} label="Restart Android boxes afterwards" description="Takes about a minute. Clears anything stuck in memory." />
         <div className="flex items-center justify-end gap-2 border-t border-line pt-4">
-          {dirty && <Button variant="ghost" onClick={() => setG(site.settings.guest)}>Discard</Button>}
+          {dirty && <Button variant="ghost" onClick={() => setG(pick(site.settings.guest))}>Discard</Button>}
           <Button variant="primary" icon={Save} loading={busy} disabled={!dirty} onClick={save}>Save</Button>
         </div>
         <p className="flex items-center gap-1.5 text-xs text-muted"><TvMinimalPlay className="size-3.5" aria-hidden />{androids.length} Android box{androids.length === 1 ? '' : 'es'} at this site.</p>

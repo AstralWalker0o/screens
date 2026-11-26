@@ -5,7 +5,7 @@ import { api } from '../../api';
 import { act, setQueryData, useQuery } from '../../lib/query';
 import { fmtNum } from '../../lib/format';
 import { MDNS_SERVICE_NAMES } from '../../lib/labels';
-import { Badge, Button, ButtonLink, Callout, Card, CardBody, CardHeader, EmptyState, IconButton, RelTime, SectionLabel, SkeletonRows, TableWrap, cn, td, th } from '../../components/ui';
+import { Badge, Button, ButtonLink, Callout, Card, CardBody, CardHeader, EmptyState, IconButton, RelTime, SectionLabel, SkeletonRows, cn } from '../../components/ui';
 import { Checkbox, ChipsInput, Field, Input, Select, Toggle, isServiceType } from '../../components/forms';
 
 const PRESETS: { label: string; types: string[] }[] = [
@@ -194,29 +194,22 @@ export function MdnsTab({ site }: { site: SiteDetail }) {
           <Card>
             <CardHeader title="Services seen" subtitle="What’s announcing itself on the networks" />
             {status?.services.length ? (
-              <TableWrap className="max-h-[420px] overflow-y-auto">
-                <table className="w-full min-w-[380px] text-sm">
-                  <thead className="sticky top-0 border-y border-line bg-surface-2">
-                    <tr><th className={th}>Service</th><th className={th}>Name</th><th className={th}>Network</th><th className={th}>Seen</th></tr>
-                  </thead>
-                  <tbody className="divide-y divide-line">
-                    {status.services.map((s, i) => (
-                      <tr key={`${s.service}-${s.instance}-${i}`}>
-                        <td className={cn(td, 'py-2')}>
-                          <span className="block text-fg">{MDNS_SERVICE_NAMES[s.service] ?? s.service}</span>
-                          <span className="font-mono text-[11px] text-subtle">{s.service}</span>
-                        </td>
-                        <td className={cn(td, 'max-w-40 py-2')}>
-                          <span className="block truncate" title={s.instance}>{s.instance.replace(/^[0-9A-F]{12}@/, '')}</span>
-                          <span className="font-mono text-[11px] text-subtle">{s.addrs?.[0]}{s.port ? `:${s.port}` : ''}</span>
-                        </td>
-                        <td className={cn(td, 'py-2 font-mono text-xs')}>{s.iface}</td>
-                        <td className={cn(td, 'py-2 text-xs text-muted')}><RelTime ts={s.last_seen} /></td>
-                      </tr>
-                    ))}
-                  </tbody>
-                </table>
-              </TableWrap>
+              <ul className="max-h-[440px] divide-y divide-line overflow-y-auto border-t border-line">
+                {status.services.map((s, i) => (
+                  <li key={`${s.service}-${s.instance}-${i}`} className="px-4 py-2.5">
+                    <div className="flex items-baseline justify-between gap-2">
+                      <span className="min-w-0 truncate text-sm text-fg" title={s.instance}>
+                        <span className="font-medium">{MDNS_SERVICE_NAMES[s.service] ?? s.service}</span>
+                        <span className="text-muted"> · {s.instance.replace(/^[0-9A-F]{12}@/, '').replace(/^Sonos-[0-9A-F]{12}@/, '')}</span>
+                      </span>
+                      <span className="shrink-0 text-xs text-subtle"><RelTime ts={s.last_seen} /></span>
+                    </div>
+                    <p className="mt-0.5 truncate font-mono text-[11px] text-muted">
+                      {s.service} · {s.addrs?.[0]}{s.port ? `:${s.port}` : ''} · {s.iface}
+                    </p>
+                  </li>
+                ))}
+              </ul>
             ) : (
               <CardBody><p className="text-sm text-muted">{draft.track_services ? 'Nothing seen yet.' : 'Service tracking is off.'}</p></CardBody>
             )}

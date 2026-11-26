@@ -4,7 +4,7 @@ import { api } from '../../api';
 import { useQuery } from '../../lib/query';
 import { fmtCompact, fmtNum, fmtPct } from '../../lib/format';
 import { CATEGORY, DNS_MODE } from '../../lib/labels';
-import { BarList, DnsChartCard } from '../../components/charts';
+import { BarList, DnsChartCard, LegendItem } from '../../components/charts';
 import { DnsLiveLog } from '../../components/DnsLog';
 import { ButtonLink, Card, CardBody, CardHeader, EmptyState, Skeleton, SkeletonRows } from '../../components/ui';
 import { KindIcon } from '../../components/status';
@@ -25,7 +25,7 @@ export function SiteDns({ site }: { site: SiteDetail }) {
     <div className="space-y-4">
       <div className="grid gap-4 lg:grid-cols-3">
         {s ? (
-          <DnsChartCard className="lg:col-span-2" series={s.series} height={220} />
+          <DnsChartCard className="lg:col-span-2" series={s.series} height={300} />
         ) : (
           <Card className="p-4 lg:col-span-2"><Skeleton className="mb-3 h-4 w-48" /><Skeleton className="h-52" /></Card>
         )}
@@ -54,6 +54,10 @@ export function SiteDns({ site }: { site: SiteDetail }) {
         <Card>
           <CardHeader title="Most looked-up domains" icon={Globe} subtitle="Everything, blocked or not, 24 h" />
           <CardBody>
+            <div className="mb-2 flex flex-wrap gap-x-4 gap-y-1">
+              <LegendItem color="var(--color-s1)" label="Blocked or watched" />
+              <LegendItem color="var(--color-other)" label="Allowed" />
+            </div>
             {s ? (
               <BarList
                 max={8}

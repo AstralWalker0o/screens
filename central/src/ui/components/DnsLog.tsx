@@ -147,12 +147,12 @@ export function DnsLiveLog({ siteId, deviceId, devices, height = 520, onDeviceLi
           <table className="w-full table-fixed text-sm">
             <thead className="sticky top-0 z-[1] bg-surface-2 text-left text-xs text-muted">
               <tr>
-                <th className="w-[78px] px-3 py-2 font-medium">Time</th>
+                <th className="hidden w-[78px] px-3 py-2 font-medium sm:table-cell">Time</th>
                 <th className="hidden w-[180px] px-3 py-2 font-medium md:table-cell">Device</th>
                 <th className="px-3 py-2 font-medium">Domain</th>
                 <th className="hidden w-[64px] px-3 py-2 font-medium lg:table-cell">Type</th>
                 <th className="hidden w-[110px] px-3 py-2 font-medium sm:table-cell">Category</th>
-                <th className="w-[118px] px-3 py-2 font-medium">Result</th>
+                <th className="w-[100px] px-3 py-2 font-medium sm:w-[118px]">Result</th>
               </tr>
             </thead>
             <tbody className="divide-y divide-line">
@@ -185,7 +185,7 @@ function LogRow({ row: r, siteId, showDevice, onDeviceListChange }: { row: Row; 
   const items = domainMenu(r, siteId, navigate, onDeviceListChange);
   return (
     <tr className={cn(ROW_TINT[r.action], r._new && 'animate-flash')}>
-      <td className="px-3 py-1.5 font-mono text-xs whitespace-nowrap text-muted tnum" title={absTime(r.ts)}>{clockTime(r.ts)}</td>
+      <td className="hidden px-3 py-1.5 font-mono text-xs whitespace-nowrap text-muted tnum sm:table-cell" title={absTime(r.ts)}>{clockTime(r.ts)}</td>
       <td className="hidden truncate px-3 py-1.5 md:table-cell" title={r.client}>
         {r.device_name ? <span className="text-fg">{r.device_name}</span> : <span className="text-muted">Unknown · {r.client}</span>}
       </td>
@@ -207,7 +207,10 @@ function LogRow({ row: r, siteId, showDevice, onDeviceListChange }: { row: Row; 
           )}
           items={items}
         />
-        {showDevice && <span className="block truncate px-1 text-xs text-muted md:hidden">{r.device_name ?? `Unknown · ${r.client}`}</span>}
+        <span className="block truncate px-1 text-xs text-muted md:hidden">
+          <span className="font-mono tnum sm:hidden">{clockTime(r.ts)}</span>
+          {showDevice && <><span className="sm:hidden"> · </span>{r.device_name ?? `Unknown · ${r.client}`}</>}
+        </span>
       </td>
       <td className="hidden px-3 py-1.5 font-mono text-xs text-muted lg:table-cell">{r.qtype}</td>
       <td className="hidden truncate px-3 py-1.5 text-xs text-muted sm:table-cell" title={r.cat ? CATEGORY[r.cat]?.help : undefined}>{r.cat ? CATEGORY[r.cat]?.label : '–'}</td>

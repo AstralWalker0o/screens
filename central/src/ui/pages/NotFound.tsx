@@ -1,6 +1,6 @@
 import { isRouteErrorResponse, useRouteError } from 'react-router';
 import { Compass, TriangleAlert, LayoutDashboard, RotateCw } from 'lucide-react';
-import { Button, ButtonLink, EmptyState } from '../components/ui';
+import { Button, ButtonLink, EmptyState, Skeleton, SkeletonRows } from '../components/ui';
 import { errorMessage } from '../lib/query';
 
 export function NotFound() {
@@ -29,5 +29,15 @@ export function RouteError() {
     >
       {chunk ? 'A newer version is available. Reload to continue.' : <span className="font-mono text-xs [overflow-wrap:anywhere]">{msg}</span>}
     </EmptyState>
+  );
+}
+
+export function PageLoading() {
+  return (
+    <div aria-busy="true" aria-label="Loading">
+      <Skeleton className="mb-2 h-6 w-48" />
+      <Skeleton className="mb-6 h-4 w-80 max-w-full" />
+      <SkeletonRows rows={6} />
+    </div>
   );
 }

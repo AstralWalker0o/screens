@@ -195,21 +195,44 @@ const JOB_LABELS: Record<string, string> = {
   'dns.rebuild': 'Rebuilt DNS policies',
   adopt: 'Adopted a device',
   'apps.enforce': 'Enforced app policy',
+  enforce_apps: 'Enforced app policy',
   'gateway.update': 'Updated gateway',
   'gateway.restart': 'Restarted gateway',
   'gateway.revoke': 'Revoked gateway',
+  screenshot: 'Screenshot', install: 'Installed an app', uninstall: 'Uninstalled an app', shell: 'Shell command', private_dns: 'Private DNS',
+  pair: 'Pairing', clear: 'Cleared app data', stop: 'Stopped an app', disable: 'Disabled an app', enable: 'Enabled an app', play_store: 'Opened Play Store',
+  launcher_install: 'Installed Screens Launcher', launcher_config: 'Updated launcher settings', launcher_remove: 'Removed Screens Launcher',
+  launcher_status: 'Checked launcher', welcome_show: 'Showed welcome screen', debloat: 'Removed bloatware', revoke_permission: 'Revoked an app permission',
+  grant_permission: 'Granted an app permission', apps: 'Refreshed app list',
 };
-export function jobLabel(kind: string): string {
+export function jobLabel(kind: string, params?: Record<string, unknown> | null): string {
+  if (kind === 'automation') return params?.automation ? `Automation “${String(params.automation)}”` : 'Automation';
   if (JOB_LABELS[kind]) return JOB_LABELS[kind];
-  if (kind.startsWith('command:')) {
-    const c = kind.slice(8);
-    const extra: Record<string, string> = { screenshot: 'Screenshot', install: 'Installed app', uninstall: 'Uninstalled app', shell: 'Shell command', private_dns: 'Private DNS', pair: 'Pairing', clear: 'Cleared app data', stop: 'Stopped app', disable: 'Disabled app', enable: 'Enabled app', play_store: 'Opened Play Store', guest_reset: 'Guest reset' };
-    return extra[c] ?? commandLabel(c);
-  }
+  if (kind.startsWith('command:')) return jobLabel(kind.slice(8));
   if (kind.startsWith('automation:')) {
     const rest = kind.slice(11);
     if (rest in EVENTS) return `Automation: ${EVENTS[rest as AutomationEvent].label.toLowerCase()}`;
-    return `Automation: ${rest}`;
+    return `Automation “${rest}”`;
   }
-  return kind.replace(/[._:]/g, ' ');
+  const c = COMMANDS.find((x) => x.id === kind);
+  if (c) return c.label;
+  const t = kind.replace(/[._:]/g, ' ');
+  return t.charAt(0).toUpperCase() + t.slice(1);
 }
+
+/** "you", "dev@localhost", "automation:Name" → readable. */
+export function actorLabel(actor?: string | null): string {
+  if (!actor) return '';
+  if (actor === 'automation') return 'an automation';
+  if (actor.startsWith('automation:')) return `automation “${actor.slice(11)}”`;
+  return actor;
+}
+
+/** Android permission → the name the revoke/grant_permission commands take. */
+export const PRIVACY_PERMISSION: Record<string, { key: 'microphone' | 'camera' | 'location' | 'contacts'; label: string }> = {
+  'android.permission.RECORD_AUDIO': { key: 'microphone', label: 'Microphone' },
+  'android.permission.CAMERA': { key: 'camera', label: 'Camera' },
+  'android.permission.ACCESS_FINE_LOCATION': { key: 'location', label: 'Location' },
+  'android.permission.ACCESS_COARSE_LOCATION': { key: 'location', label: 'Location' },
+  'android.permission.READ_CONTACTS': { key: 'contacts', label: 'Contacts' },
+};

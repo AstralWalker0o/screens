@@ -1,0 +1,13 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <!-- Platform theme only (no AppCompat): everything visible is drawn by Compose. -->
+    <style name="Theme.Screens" parent="android:Theme.Material.NoActionBar">
+        <item name="android:windowBackground">@color/screens_background</item>
+        <item name="android:colorBackground">@color/screens_background</item>
+        <item name="android:colorAccent">@color/screens_accent</item>
+        <item name="android:windowFullscreen">true</item>
+        <item name="android:windowNoTitle">true</item>
+        <item name="android:statusBarColor">@color/screens_background</item>
+        <item name="android:navigationBarColor">@color/screens_background</item>
+    </style>
+</resources>

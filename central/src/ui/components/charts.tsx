@@ -137,7 +137,8 @@ export function DnsColumns({ series, height = 200 }: { series: DnsSeriesPoint[];
   const [hover, setHover] = useState<number | null>(null);
   const m = { top: 8, right: 4, bottom: 22, left: 40 };
   const plotW = Math.max(0, width - m.left - m.right);
-  const plotH = height;
+  // Keep a sensible aspect ratio on narrow screens.
+  const plotH = width ? Math.round(Math.min(height, Math.max(140, width * 0.5))) : height;
   const max = Math.max(1, ...series.map((p) => p.queries));
   const ticks = niceTicks(max, 4);
   const top = ticks[ticks.length - 1] || 1;
