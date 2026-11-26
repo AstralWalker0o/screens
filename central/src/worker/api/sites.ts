@@ -2,10 +2,10 @@ import { Hono } from 'hono';
 import type { EnrollResult, MdnsConfig, Overview, SiteDetail, SiteSettings } from '../../shared/types';
 import { randomToken, sha256Hex } from '../lib/crypto';
 import {
-  audit, DEFAULT_SITE_SETTINGS, getAppSettings, type Row, siteMdns, siteSettings, toAlert, toDevice, toDiscovered, toGateway, toJob,
+  audit, DEFAULT_SITE_SETTINGS, getAppSettings, kioskPinHash, type Row, siteMdns, siteSettings, toAlert, toDevice, toDiscovered, toGateway, toJob,
 } from '../lib/db';
 import { hub, hubStub, originOf } from '../lib/hub';
-import { HttpError, now, rid, slugify } from '../lib/util';
+import { HttpError, isPrivateIPv4, now, rid, slugify } from '../lib/util';
 import { actorOf, type AppEnv, body, fleetDnsSummary, siteSummaries } from './shared';
 
 export const siteRoutes = new Hono<AppEnv>();
@@ -127,17 +127,69 @@ siteRoutes.patch('/sites/:id', async (c) => {
   const site = await c.env.DB.prepare('SELECT * FROM sites WHERE id = ?').bind(id).first<Row>();
   if (!site) throw new HttpError(404, 'not_found', 'Site not found');
   const prev = siteSettings(site);
-  const settings: SiteSettings = b.settings ? { ...prev, ...b.settings, guest: { ...prev.guest, ...(b.settings.guest ?? {}) } } : prev;
+  const settings: SiteSettings = b.settings ? mergeSettings(prev, b.settings) : prev;
+  // The kiosk PIN is stored only as a SHA-256 hash and never returned.
+  let pinHash = kioskPinHash(site);
+  const newPin = b.settings?.guest?.kiosk?.pin;
+  if (typeof newPin === 'string') {
+    if (newPin === '') pinHash = null;
+    else if (/^\d{4,8}$/.test(newPin)) pinHash = await sha256Hex(newPin);
+    else throw new HttpError(400, 'bad_request', 'Kiosk PIN must be 4–8 digits');
+  }
+  const stored = { ...settings, guest: { ...settings.guest, kiosk: { ...settings.guest.kiosk, pin_set: undefined, pin: undefined, pin_sha256: pinHash } } };
   await c.env.DB.prepare('UPDATE sites SET name = ?, kind = ?, timezone = ?, address = ?, notes = ?, client_id = ?, settings = ? WHERE id = ?')
-    .bind(b.name ?? site.name, b.kind ?? site.kind, b.timezone ?? site.timezone, b.address ?? site.address, b.notes ?? site.notes, b.client_id ?? site.client_id, JSON.stringify(settings), id).run();
+    .bind(b.name ?? site.name, b.kind ?? site.kind, b.timezone ?? site.timezone, b.address ?? site.address, b.notes ?? site.notes, b.client_id ?? site.client_id, JSON.stringify(stored), id).run();
   const origin = originOf(c.req.raw, c.env);
+  if (b.settings?.guest?.welcome || b.settings?.guest?.kiosk) {
+    c.executionCtx.waitUntil(hub(c.env, id, origin, 'pushLauncherConfig').catch(() => undefined));
+  }
   if (settings.dot_enabled && !prev.dot_enabled) await hub(c.env, id, origin, 'requestDot');
   if (settings.unknown_clients !== prev.unknown_clients || settings.default_policy !== prev.default_policy || settings.dot_enabled !== prev.dot_enabled) {
     c.executionCtx.waitUntil(hub(c.env, id, origin, 'pushDnsConfig').catch(() => undefined));
   }
-  await audit(c.env, actorOf(c), 'site.update', { target_type: 'site', target_id: id, site_id: id, details: b });
+  const auditBody = b.settings?.guest?.kiosk?.pin !== undefined ? { ...b, settings: { ...b.settings, guest: { ...b.settings.guest, kiosk: { ...b.settings.guest.kiosk, pin: '[redacted]' } } } } : b;
+  await audit(c.env, actorOf(c), 'site.update', { target_type: 'site', target_id: id, site_id: id, details: auditBody });
   return c.json(await siteDetail(c, id));
 });
+
+const PKG = /^[a-zA-Z][a-zA-Z0-9_]*(\.[a-zA-Z0-9_]+)+$/;
+const str = (v: unknown, max: number, fallback = '') => (typeof v === 'string' ? v.slice(0, max) : fallback);
+const pkgs = (v: unknown) => (Array.isArray(v) ? [...new Set(v.filter((p): p is string => typeof p === 'string' && PKG.test(p)))].slice(0, 100) : []);
+
+/** Validate and merge a partial settings update (nested guest/welcome/kiosk objects merge too). */
+function mergeSettings(prev: SiteSettings, patch: any): SiteSettings {
+  const out: SiteSettings = { ...prev };
+  if (patch.monitor_days !== undefined) out.monitor_days = Math.min(60, Math.max(0, Number(patch.monitor_days) || 0));
+  if (patch.default_policy !== undefined) out.default_policy = patch.default_policy === 'strict' ? 'strict' : 'balanced';
+  if (patch.unknown_clients !== undefined) out.unknown_clients = ['enforce', 'monitor', 'off', 'bypass'].includes(patch.unknown_clients) ? patch.unknown_clients : prev.unknown_clients;
+  if (patch.scan_cidrs !== undefined) out.scan_cidrs = (Array.isArray(patch.scan_cidrs) ? patch.scan_cidrs : []).filter((c: unknown) => typeof c === 'string' && /^\d+\.\d+\.\d+\.\d+\/(2[2-9]|3[0-2])$/.test(c)).slice(0, 16);
+  if (patch.dot_enabled !== undefined) out.dot_enabled = !!patch.dot_enabled;
+  const g = patch.guest;
+  if (g) {
+    const guest = { ...prev.guest };
+    if (g.clear_packages !== undefined) guest.clear_packages = pkgs(g.clear_packages);
+    if (g.go_home !== undefined) guest.go_home = !!g.go_home;
+    if (g.reboot !== undefined) guest.reboot = !!g.reboot;
+    if (g.show_welcome_after_reset !== undefined) guest.show_welcome_after_reset = !!g.show_welcome_after_reset;
+    if (g.welcome) {
+      const w = { ...prev.guest.welcome, ...g.welcome };
+      const wifi = w.wifi && typeof w.wifi === 'object' && str(w.wifi.ssid, 32)
+        ? { ssid: str(w.wifi.ssid, 32), password: str(w.wifi.password, 63), security: (['WPA', 'WEP', 'nopass'].includes(w.wifi.security) ? w.wifi.security : 'WPA') as 'WPA' | 'WEP' | 'nopass' }
+        : null;
+      guest.welcome = {
+        enabled: !!w.enabled, show_on_boot: !!w.show_on_boot, title: str(w.title, 80, 'Welcome'), message: str(w.message, 600),
+        wifi, sections: (Array.isArray(w.sections) ? w.sections : []).slice(0, 8).map((x: any) => ({ title: str(x?.title, 60), body: str(x?.body, 600) })).filter((x: any) => x.title || x.body),
+        contact: str(w.contact, 160), accent: /^#[0-9a-fA-F]{6}$/.test(w.accent) ? w.accent : '#4F8EF7',
+      };
+    }
+    if (g.kiosk) {
+      const k = { ...prev.guest.kiosk, ...g.kiosk };
+      guest.kiosk = { enabled: !!k.enabled, allowed: pkgs(k.allowed), pinned: pkgs(k.pinned), force_home: !!k.force_home };
+    }
+    out.guest = guest;
+  }
+  return out;
+}
 
 siteRoutes.delete('/sites/:id', async (c) => {
   const id = c.req.param('id');
@@ -214,7 +266,8 @@ siteRoutes.post('/sites/:id/discovered/:ip/ignore', async (c) => {
 
 siteRoutes.post('/sites/:id/adopt', async (c) => {
   const b = await body(c);
-  if (!b.ip || !/^[\d.]+$/.test(b.ip) || !['android', 'samsung', 'lg', 'sonos', 'other'].includes(b.kind) || !b.name?.trim()) throw new HttpError(400, 'bad_request', 'ip, kind and name are required');
+  if (!b.ip || !isPrivateIPv4(b.ip) || !['android', 'samsung', 'lg', 'sonos', 'other'].includes(b.kind) || !b.name?.trim()) throw new HttpError(400, 'bad_request', 'A private LAN ip, kind and name are required');
+  if (b.port !== undefined && b.port !== null && b.port !== '' && !(Number(b.port) >= 1 && Number(b.port) <= 65535)) throw new HttpError(400, 'bad_request', 'Invalid port');
   const id = c.req.param('id');
   const dup = await c.env.DB.prepare('SELECT id FROM devices WHERE site_id = ? AND ip = ?').bind(id, b.ip).first<Row>();
   if (dup) throw new HttpError(409, 'exists', 'A device with this IP is already adopted');

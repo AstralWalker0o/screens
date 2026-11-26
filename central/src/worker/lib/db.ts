@@ -30,6 +30,20 @@ export const DEFAULT_SITE_SETTINGS: SiteSettings = {
     ],
     go_home: true,
     reboot: false,
+    show_welcome_after_reset: true,
+    welcome: {
+      enabled: false,
+      show_on_boot: true,
+      title: 'Welcome',
+      message: 'We hope you enjoy your stay.',
+      wifi: null,
+      sections: [
+        { title: 'Your privacy', body: 'Your streaming logins are cleared automatically after you check out.' },
+      ],
+      contact: '',
+      accent: '#4F8EF7',
+    },
+    kiosk: { enabled: false, allowed: [], pinned: [], force_home: false },
   },
 };
 
@@ -44,7 +58,17 @@ export const DEFAULT_MDNS: MdnsConfig = {
 
 export function siteSettings(row: Row): SiteSettings {
   const s = parseJson<Partial<SiteSettings>>(row.settings, {});
-  return { ...DEFAULT_SITE_SETTINGS, ...s, guest: { ...DEFAULT_SITE_SETTINGS.guest, ...(s.guest ?? {}) } };
+  const g: any = s.guest ?? {};
+  const d = DEFAULT_SITE_SETTINGS.guest;
+  const kiosk = { ...d.kiosk, ...(g.kiosk ?? {}) };
+  const pin_set = !!kiosk.pin_sha256;
+  delete kiosk.pin_sha256; delete kiosk.pin;
+  return { ...DEFAULT_SITE_SETTINGS, ...s, guest: { ...d, ...g, welcome: { ...d.welcome, ...(g.welcome ?? {}) }, kiosk: { ...kiosk, pin_set } } };
+}
+
+/** Raw stored kiosk PIN hash (never sent to the dashboard). */
+export function kioskPinHash(row: Row): string | null {
+  return parseJson<any>(row.settings, {}).guest?.kiosk?.pin_sha256 ?? null;
 }
 
 export function siteMdns(row: Row): MdnsConfig {
@@ -54,7 +78,7 @@ export function siteMdns(row: Row): MdnsConfig {
 export function capabilitiesFor(kind: DeviceKind): DeviceCapability[] {
   switch (kind) {
     case 'android':
-      return ['remote', 'text', 'apps', 'launch', 'install', 'uninstall', 'disable', 'clear', 'screenshot', 'tap', 'shell', 'reboot', 'power', 'volume', 'private_dns', 'media', 'toast', 'guest_reset'];
+      return ['remote', 'text', 'apps', 'launch', 'install', 'uninstall', 'disable', 'clear', 'screenshot', 'tap', 'shell', 'reboot', 'power', 'volume', 'private_dns', 'media', 'toast', 'guest_reset', 'launcher'];
     case 'samsung':
       return ['remote', 'text', 'apps', 'launch', 'power', 'volume', 'guest_reset'];
     case 'lg':

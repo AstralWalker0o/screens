@@ -206,6 +206,7 @@ class FakeAndroid:
             'com.android.vending': ('/system/priv-app/Phonesky/Phonesky.apk', 8, '38.0'),
         }
         self.awake = True
+        self.home = 'com.google.android.tvlauncher'
 
     def shell(self, cmd):
         """Very small emulation of the commands the Screens Android driver sends."""
@@ -223,6 +224,21 @@ class FakeAndroid:
             out.append('@@CAM')
             out.append('@@VER'); out += [f'{p} {self.packages[p][2]}' for p in third]
             out.append('@@END')
+        elif 'au.supercluster.screens.launcher.CONFIG' in cmd:
+            m = re.search(r'--es config_b64 (\S+)', cmd)
+            try:
+                cfg = base64.b64decode(m.group(1)); json.loads(cfg)
+                self.launcher_cfg = hashlib.sha256(cfg).hexdigest()
+                out.append(f'Broadcasting: Intent {{ act=au.supercluster.screens.launcher.CONFIG }}')
+                out.append(f'Broadcast completed: result=1, data="ok:{self.launcher_cfg}"')
+            except Exception as e:
+                out.append(f'Broadcast completed: result=0, data="error:{e}"')
+        elif 'au.supercluster.screens.launcher.STATUS' in cmd:
+            if 'au.supercluster.screens.launcher' in self.packages:
+                st = json.dumps({'version': '1.0.0', 'config_sha': getattr(self, 'launcher_cfg', None), 'is_home': self.home == 'au.supercluster.screens.launcher'}).replace('"', '\\"')
+                out.append(f'Broadcast completed: result=1, data="status:{st}"')
+            else:
+                out.append('Broadcast completed: result=0')
         elif cmd.startswith('dumpsys appops'):
             out += ['  Uid u0a12:', '    Package com.google.android.katniss:', '      RECORD_AUDIO (allow):', '        Access: [top-s] 2026-11-26 09:58:12.345 (-2m14s345ms) duration=+3s']
         else:
@@ -244,6 +260,9 @@ class FakeAndroid:
                     if code == '224': self.awake = True
                     continue
                 if part.startswith('monkey'): out.append('Events injected: 1'); continue
+                m = re.match(r'cmd package set-home-activity (\S+)/', part)
+                if m: self.home = m.group(1); out.append('Success'); continue
+                if part.startswith('am start'): out.append('Starting: Intent { cmp=' + part.split('-n ')[-1] + ' }'); continue
                 if part.startswith('ping'): continue
                 m = re.match(r'echo\s+"?([^"$]*)\$\?"?', part)
                 if m: out.append(f'{m.group(1)}0'); continue
@@ -299,6 +318,7 @@ def adbd(ip, dev):
                         s['got'] += len(data)
                         if s['got'] >= s['need']:
                             log('android.install_done', ip=ip, size=s['got'])
+                            dev.packages.setdefault('au.supercluster.screens.launcher', ('/data/app/~~l==/au.supercluster.screens.launcher-1==/base.apk', 1, '1.0.0'))
                             s['kind'] = 'out'; s['out'] = [b'Success\n']
                             pump(conn, a1, streams)
                 elif cmd == A_CLSE:

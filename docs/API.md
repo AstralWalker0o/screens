@@ -34,6 +34,7 @@ Errors are `{ "error": "code", "message": "human text" }` with a 4xx/5xx status.
 | PATCH | `/api/devices/:id` | `{name, room, tags, ip, port, dns_mode, dns_policy, dns_allow, dns_block}` | `Device` |
 | DELETE | `/api/devices/:id` | | `{ok}` |
 | POST | `/api/devices/:id/command` | `CommandRequest` | `CommandResult` |
+| POST | `/api/devices/bulk` | `BulkCommandRequest` `{device_ids, command, args}` (no `shell`) | `BulkCommandResult` |
 | GET | `/api/devices/:id/apps` | | `DeviceApp[]` (cached inventory; `command: "apps"` refreshes) |
 | GET | `/api/devices/:id/privacy` | | `DevicePrivacy` |
 | PUT | `/api/devices/:id/privacy/checklist` | `{key, done}` | `{ok}` |
@@ -89,4 +90,11 @@ Which commands are available depends on `Device.capabilities`.
 | `group` | `{coordinator_id}` / `ungroup` | sonos |
 | `led` | `{on: bool}` | sonos |
 | `toast` | `{message}` | lg, android |
-| `guest_reset` | – | android (samsung: best-effort Home) |
+| `guest_reset` | – | android (samsung: best-effort Home). Re-opens the launcher welcome screen when enabled. |
+| `launcher_install` | – | android: installs the Screens Launcher from the library, pushes the site's kiosk/welcome config and makes it the home screen |
+| `launcher_config` | – | android: re-push the site's kiosk/welcome config |
+| `launcher_status` | – | android → `{status: LauncherState}` (also stored in `facts.launcher`) |
+| `launcher_remove` | – | android: restore the stock launcher and uninstall |
+| `welcome_show` | – | android: show the welcome screen now |
+
+Site guest settings (`SiteSettings.guest`) include `welcome: WelcomeConfig`, `kiosk: KioskConfig` (write `kiosk.pin` as 4–8 digits, read `kiosk.pin_set`) and `show_welcome_after_reset`. Saving them re-pushes the launcher config to every device that has it.

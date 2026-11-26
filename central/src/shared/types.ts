@@ -49,7 +49,38 @@ export interface GuestSettings {
   clear_packages: string[];          // Android packages to wipe on guest reset
   go_home: boolean;
   reboot: boolean;
+  show_welcome_after_reset: boolean; // re-open the Screens Launcher welcome screen after a reset
+  welcome: WelcomeConfig;
+  kiosk: KioskConfig;
 }
+
+/** Welcome screen shown by the Screens Launcher (Android TV) on boot / after guest reset. */
+export interface WelcomeConfig {
+  enabled: boolean;
+  show_on_boot: boolean;
+  title: string;
+  message: string;
+  wifi: { ssid: string; password: string; security: 'WPA' | 'WEP' | 'nopass' } | null;
+  sections: { title: string; body: string }[];
+  contact: string;
+  accent: string;                    // hex colour, e.g. #4F8EF7
+}
+
+/** Kiosk mode for the Screens Launcher: guests only see these apps. */
+export interface KioskConfig {
+  enabled: boolean;
+  allowed: string[];                 // package names shown on the launcher
+  pinned: string[];                  // shown first, in this order
+  force_home: boolean;               // also disable the stock launcher (needed on some Google TV builds)
+  pin_set?: boolean;                 // read-only: an exit PIN is configured
+  pin?: string;                      // write-only: 4–8 digits to set, "" to clear
+}
+
+/** Screens Launcher state on an Android device (Device.facts.launcher). */
+export interface LauncherState { installed: boolean; version?: string | null; config_sha?: string | null; is_home?: boolean; checked_at?: number }
+
+export interface BulkCommandRequest { device_ids: string[]; command: string; args?: Record<string, unknown> }
+export interface BulkCommandResult { results: { device_id: string; name?: string; ok: boolean; error?: string; data?: unknown }[] }
 
 export interface SiteSummary {
   id: string; client_id: string; client_name?: string; name: string; slug: string;
@@ -91,7 +122,7 @@ export interface Device {
 export type DeviceCapability =
   | 'remote' | 'text' | 'apps' | 'launch' | 'install' | 'uninstall' | 'disable' | 'clear'
   | 'screenshot' | 'tap' | 'shell' | 'reboot' | 'power' | 'volume' | 'private_dns'
-  | 'media' | 'group' | 'toast' | 'guest_reset';
+  | 'media' | 'group' | 'toast' | 'guest_reset' | 'launcher';
 
 export interface Discovered {
   site_id: string; ip: string; mac?: string | null; kind_guess: DeviceKind | null;

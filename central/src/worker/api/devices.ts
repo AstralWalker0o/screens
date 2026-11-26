@@ -83,6 +83,29 @@ deviceRoutes.post('/devices/:id/command', async (c) => {
   return c.json({ ok: (data as any)?.ok !== false, data, error: (data as any)?.ok === false ? (data as any).detail ?? (data as any).output : undefined });
 });
 
+/** Run one command on many devices (grouped per site; each site's hub runs them in parallel). */
+deviceRoutes.post('/devices/bulk', async (c) => {
+  const b = await body(c);
+  const ids: string[] = Array.isArray(b.device_ids) ? [...new Set<string>(b.device_ids.map(String))].slice(0, 200) : [];
+  if (!ids.length) throw new HttpError(400, 'bad_request', 'device_ids required');
+  if (typeof b.command !== 'string' || !/^[a-z_]{2,32}$/.test(b.command)) throw new HttpError(400, 'bad_request', 'command required');
+  if (b.command === 'shell') throw new HttpError(400, 'bad_request', 'Shell commands can only be run on one device at a time');
+  const rows = (await c.env.DB.prepare(`SELECT id, site_id, name FROM devices WHERE id IN (${ids.map(() => '?').join(',')})`).bind(...ids).all<Row>()).results;
+  const origin = originOf(c.req.raw, c.env);
+  const actor = actorOf(c);
+  const results = await Promise.all(rows.map(async (d) => {
+    try {
+      const data: any = await hub(c.env, d.site_id, origin, 'command', d.id, b.command, b.args ?? {}, actor);
+      return { device_id: d.id, name: d.name, ok: data?.ok !== false, data, error: data?.ok === false ? data.detail ?? data.output : undefined };
+    } catch (e: any) {
+      return { device_id: d.id, name: d.name, ok: false, error: e.message };
+    }
+  }));
+  for (const id of ids) if (!rows.find((r) => r.id === id)) results.push({ device_id: id, name: undefined as any, ok: false, error: 'Device not found' });
+  await audit(c.env, actor, 'device.bulk', { details: { command: b.command, devices: ids.length, failed: results.filter((r) => !r.ok).length } });
+  return c.json({ results });
+});
+
 deviceRoutes.get('/devices/:id/apps', async (c) => {
   const id = c.req.param('id');
   const rows = await c.env.DB.prepare('SELECT a.*, k.category, k.risk, k.label catalog_label FROM device_apps a LEFT JOIN app_catalog k ON k.package = a.package WHERE a.device_id = ? ORDER BY a.system, coalesce(a.label, k.label, a.package)').bind(id).all<Row>();

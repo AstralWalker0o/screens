@@ -149,10 +149,32 @@ def main():
         t2 = time.time()
         r = api('POST', f'/api/devices/{sh}/command', {'command': 'install', 'args': {'apk_id': apk['id']}}, timeout=180)
         check('install APK from library (streamed over adb)', r['ok'] and sim_events('android.install_done', t2), json.dumps(r)[:300])
+        print('== screens launcher (kiosk + welcome)')
+        api('PATCH', f'/api/sites/{sid}', {'settings': {'guest': {
+            'welcome': {'enabled': True, 'show_on_boot': True, 'title': 'Welcome to the Beach House', 'message': 'Enjoy!', 'wifi': {'ssid': 'Beach-Guest', 'password': 'sunny', 'security': 'WPA'}, 'sections': [{'title': 'Checkout', 'body': '10am'}], 'contact': 'Text Nik', 'accent': '#4F8EF7'},
+            'kiosk': {'enabled': True, 'allowed': ['com.netflix.ninja', 'au.com.stan.and', 'bad pkg!'], 'pinned': ['com.netflix.ninja'], 'force_home': False, 'pin': '2468'}}}})
+        st = api('GET', f'/api/sites/{sid}')['settings']['guest']
+        check('kiosk PIN stored as hash only (pin_set, no pin)', st['kiosk'].get('pin_set') is True and 'pin' not in st['kiosk'] and 'pin_sha256' not in st['kiosk'], json.dumps(st['kiosk']))
+        check('kiosk package list validated', st['kiosk']['allowed'] == ['com.netflix.ninja', 'au.com.stan.and'], json.dumps(st['kiosk']))
+        boundary = '----screens2'
+        body2 = (f'--{boundary}\r\nContent-Disposition: form-data; name="package"\r\n\r\nau.supercluster.screens.launcher\r\n--{boundary}\r\nContent-Disposition: form-data; name="file"; filename="launcher.apk"\r\n\r\n').encode() + b'PK\x03\x04' + os.urandom(3000) + f'\r\n--{boundary}--\r\n'.encode()
+        opener.open(urllib.request.Request(BASE + '/api/apks', method='POST', data=body2, headers={'content-type': f'multipart/form-data; boundary={boundary}'}), timeout=30).read()
+        t_l = time.time()
+        r = api('POST', f'/api/devices/{sh}/command', {'command': 'launcher_install'}, timeout=180)
+        sent = [e['cmd'] for e in sim_events('android.shell', t_l)]
+        check('launcher installed, configured and set as home', r['ok'] and r['data']['status'].get('is_home') is True and any('set-home-activity' in c for c in sent), json.dumps(r)[:400])
+        cfgcmd = next((c for c in sent if 'launcher.CONFIG' in c), '')
+        check('launcher config broadcast sent', bool(cfgcmd))
+        d = api('GET', f'/api/devices/{sh}')
+        check('launcher state stored on device', d['facts'].get('launcher', {}).get('installed') is True, json.dumps(d['facts'].get('launcher')))
+
         t3 = time.time()
         r = api('POST', f'/api/sites/{sid}/guest-reset', {})
         cleared = [e['cmd'] for e in sim_events('android.shell', t3) if 'pm clear' in e['cmd']]
         check('guest reset clears streaming apps', any('com.netflix.ninja' in c for c in cleared) and any('au.com.stan.and' in c for c in cleared), json.dumps(r)[:300])
+        check('guest reset re-opens the welcome screen', any('WelcomeActivity' in e['cmd'] for e in sim_events('android.shell', t3)))
+        r = api('POST', '/api/devices/bulk', {'device_ids': [sh, tv], 'command': 'key', 'args': {'key': 'HOME'}})
+        check('bulk command across device kinds', len(r['results']) == 2 and all(x['ok'] for x in r['results']), json.dumps(r)[:300])
 
         print('== samsung control')
         t4 = time.time()

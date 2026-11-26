@@ -10,9 +10,9 @@ import { classify } from '../dns/compile';
 import { buildDnsConfig } from '../dns/config';
 import { certNotAfter, issueCertificate, upsertRecord, zoneId } from '../acme/acme';
 import type { Env } from '../env';
-import { openJson, sealJson, signAgentUrl } from '../lib/crypto';
+import { b64Encode, openJson, sealJson, signAgentUrl } from '../lib/crypto';
 import {
-  audit, createJob, finishJob, getAppSettings, raiseAlert, resolveAlert, type Row, siteMdns, siteSettings, toAutomation, toDevice, toDiscovered,
+  audit, createJob, finishJob, getAppSettings, kioskPinHash, raiseAlert, resolveAlert, type Row, siteMdns, siteSettings, toAutomation, toDevice, toDiscovered,
 } from '../lib/db';
 import { chunk, dayKey, hourKey, HttpError, normMac, now, parseJson, rid, sleep } from '../lib/util';
 import { scoreDevice } from '../privacy/score';
@@ -21,8 +21,8 @@ import { RelayStream } from './stream';
 interface Pending { resolve: (v: any) => void; reject: (e: Error) => void; timer: ReturnType<typeof setTimeout> }
 
 const TICK_MS = 60_000;
-const QUIET_COMMANDS = new Set(['key', 'text', 'tap', 'volume', 'mute', 'media', 'screenshot', 'refresh', 'apps', 'topology', 'mic_usage']);
-const JOB_COMMANDS = new Set(['install', 'uninstall', 'guest_reset', 'reboot', 'private_dns', 'shell', 'clear', 'disable', 'enable', 'restore']);
+const QUIET_COMMANDS = new Set(['key', 'text', 'tap', 'volume', 'mute', 'media', 'screenshot', 'refresh', 'apps', 'topology', 'mic_usage', 'launcher_status', 'welcome_show']);
+const JOB_COMMANDS = new Set(['install', 'uninstall', 'guest_reset', 'reboot', 'private_dns', 'shell', 'clear', 'disable', 'enable', 'restore', 'launcher_install', 'launcher_config', 'launcher_remove']);
 const OFFLINE_AFTER_FAILS = 3;
 
 export class SiteHub extends DurableObject<Env> {
@@ -390,7 +390,14 @@ export class SiteHub extends DurableObject<Env> {
         }
         if (command === 'guest_reset') {
           const g = siteSettings(await this.site()).guest;
-          args = { packages: g.clear_packages, go_home: g.go_home, reboot: g.reboot };
+          const launcher = parseJson<any>(row.facts, {}).launcher;
+          args = { packages: g.clear_packages, go_home: g.go_home, reboot: g.reboot, show_welcome: !!(g.show_welcome_after_reset && g.welcome.enabled && launcher?.installed) };
+        }
+        if (command === 'launcher_install' || command === 'launcher_config') {
+          args = { ...args, config_b64: await this.launcherConfigB64(), force_home: siteSettings(await this.site()).guest.kiosk.force_home };
+          if (command === 'launcher_install') {
+            args.apk = await this.env.DB.prepare("SELECT r2_key, sha256, version_name FROM apks WHERE package = 'au.supercluster.screens.launcher' ORDER BY coalesce(version_code, 0) DESC, uploaded_at DESC LIMIT 1").first<Row>();
+          }
         }
         result = await adapter.command(ctx, command, args);
         if (['install', 'uninstall', 'disable', 'enable', 'restore'].includes(command)) this.ctx.waitUntil(this.syncApps(row).catch(() => undefined));
@@ -665,6 +672,34 @@ export class SiteHub extends DurableObject<Env> {
     return { devices: report };
   }
 
+  // ---------------------------------------------------------------- Screens Launcher (kiosk + welcome)
+  /** Config JSON for the Android TV launcher (docs/LAUNCHER.md), base64-encoded for `am broadcast --es`. */
+  async launcherConfigB64(): Promise<string> {
+    const site = await this.site();
+    const g = siteSettings(site).guest;
+    const cfg = {
+      v: 1, site_name: site.name, accent: g.welcome.accent,
+      kiosk: { enabled: g.kiosk.enabled, allowed: g.kiosk.allowed, pin_sha256: kioskPinHash(site) },
+      pinned: g.kiosk.pinned,
+      welcome: {
+        enabled: g.welcome.enabled, show_on_boot: g.welcome.show_on_boot, title: g.welcome.title || `Welcome to ${site.name}`,
+        message: g.welcome.message, wifi: g.welcome.wifi, sections: g.welcome.sections, contact: g.welcome.contact,
+      },
+    };
+    return b64Encode(new TextEncoder().encode(JSON.stringify(cfg)));
+  }
+
+  /** Re-send launcher config to every Android device that has the launcher installed. */
+  async pushLauncherConfig(): Promise<{ device_id: string; ok: boolean }[]> {
+    if (!this.online) return [];
+    const devices = (await this.env.DB.prepare("SELECT id, facts FROM devices WHERE site_id = ? AND kind = 'android' AND status IN ('online','standby')").bind(this.siteId).all<Row>()).results
+      .filter((d) => parseJson<any>(d.facts, {}).launcher?.installed);
+    return Promise.all(devices.map(async (d) => {
+      try { const r = await this.command(d.id, 'launcher_config', {}, 'system'); return { device_id: d.id, ok: r?.ok !== false }; }
+      catch { return { device_id: d.id, ok: false }; }
+    }));
+  }
+
   // ---------------------------------------------------------------- automations
   async runAutomation(automationId: string, ctxDeviceId: string | null = null): Promise<{ ok: boolean; job_id: string }> {
     const row = await this.env.DB.prepare('SELECT * FROM automations WHERE id = ?').bind(automationId).first<Row>();
@@ -906,7 +941,7 @@ export class SiteHub extends DurableObject<Env> {
       dnsLog: this.dnsLog, dnsSummary: this.dnsSummary, privacy: this.privacy, mdnsStatus: this.mdnsStatus, gatewayLogs: this.gatewayLogs,
       gatewayAction: this.gatewayAction, disconnectAgent: this.disconnectAgent, guestReset: this.guestReset, enforceApps: this.enforceApps,
       runAutomation: this.runAutomation, pushDnsConfig: this.pushDnsConfig, pushMdnsConfig: this.pushMdnsConfig, status: this.status,
-      requestDot: this.requestDot, flushAggregates: this.flushAggregates,
+      requestDot: this.requestDot, flushAggregates: this.flushAggregates, pushLauncherConfig: this.pushLauncherConfig,
     };
     const fn = allowed[method];
     if (!fn) return { ok: false, status: 400, code: 'bad_method', message: `Unknown hub method ${method}` };

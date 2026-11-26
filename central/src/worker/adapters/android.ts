@@ -274,11 +274,81 @@ export const android: Adapter = {
         const r = await sh(ctx, 'dumpsys appops --op RECORD_AUDIO 2>/dev/null | head -400', 30_000);
         return parseMicUsage(r.stdout);
       }
-      case 'guest_reset': return guestReset(ctx, (args.packages as string[]) ?? [], !!args.go_home, !!args.reboot);
+      case 'guest_reset': {
+        const r = await guestReset(ctx, (args.packages as string[]) ?? [], !!args.go_home && !args.show_welcome, !!args.reboot);
+        if (args.show_welcome && !args.reboot) {
+          await sh(ctx, `am start -n ${LAUNCHER_PKG}/.WelcomeActivity`).catch(() => undefined);
+          (r as any).welcome = true;
+        }
+        return r;
+      }
+      case 'launcher_install': {
+        const apk = args.apk as { r2_key: string; sha256: string; version_name?: string } | undefined;
+        if (!apk) throw new AdapterError('not_found', 'The Screens Launcher APK has not been published to the library yet');
+        const url = await signAgentUrl(ctx.env.SIGNING_SECRET, ctx.origin, 'GET', apk.r2_key, 30 * 60_000);
+        const inst = await ctx.gw('adb.install', { serial: serialOf(ctx), url, sha256: apk.sha256, flags: ['-r'] }, 600_000);
+        if (!/Success/i.test(inst.output ?? '')) return { ok: false, detail: `Install failed: ${String(inst.output ?? '').slice(-300)}` };
+        const cfg = await launcherConfigure(ctx, String(args.config_b64 ?? ''));
+        await sh(ctx, `cmd package set-home-activity ${LAUNCHER_PKG}/.LauncherActivity 2>&1`).catch(() => undefined);
+        if (args.force_home) await sh(ctx, STOCK_LAUNCHERS.map((p) => `pm disable-user --user 0 ${p} 2>/dev/null`).join('; ')).catch(() => undefined);
+        await sh(ctx, 'input keyevent 3').catch(() => undefined);
+        const st = await launcherStatus(ctx);
+        await ctx.update({ facts: { launcher: st } });
+        return { ok: true, config: cfg, status: st };
+      }
+      case 'launcher_config': {
+        const cfg = await launcherConfigure(ctx, String(args.config_b64 ?? ''));
+        const st = await launcherStatus(ctx);
+        await ctx.update({ facts: { launcher: st } });
+        return { ok: cfg.ok, detail: cfg.detail, status: st };
+      }
+      case 'launcher_status': {
+        const st = await launcherStatus(ctx);
+        await ctx.update({ facts: { launcher: st } });
+        return { ok: true, status: st };
+      }
+      case 'launcher_remove': {
+        await sh(ctx, STOCK_LAUNCHERS.map((p) => `pm enable ${p} 2>/dev/null`).join('; ')).catch(() => undefined);
+        const r = await ctx.gw('adb.uninstall', { serial: serialOf(ctx), package: LAUNCHER_PKG }, 60_000).catch((e: any) => ({ output: e.message }));
+        await sh(ctx, 'input keyevent 3').catch(() => undefined);
+        await ctx.update({ facts: { launcher: { installed: false, checked_at: Date.now() } } });
+        return { ok: /Success|not installed|Unknown package/i.test(r.output ?? ''), output: r.output };
+      }
+      case 'welcome_show': {
+        await sh(ctx, `am start -n ${LAUNCHER_PKG}/.WelcomeActivity`);
+        return { ok: true };
+      }
       default: throw new AdapterError('not_supported', `Android devices don't support "${command}"`);
     }
   },
 };
+
+export const LAUNCHER_PKG = 'au.supercluster.screens.launcher';
+const STOCK_LAUNCHERS = ['com.google.android.tvlauncher', 'com.google.android.apps.tv.launcherx'];
+
+/** Parse `am broadcast` output: Broadcast completed: result=1, data="ok:..." */
+export function parseBroadcast(out: string): { result: number | null; data: string | null } {
+  const m = out.match(/Broadcast completed: result=(-?\d+)(?:, data="((?:[^"\\]|\\.)*)")?/);
+  return { result: m ? Number(m[1]) : null, data: m?.[2] != null ? m[2].replace(/\\"/g, '"').replace(/\\\\/g, '\\') : null };
+}
+
+async function launcherConfigure(ctx: AdapterCtx, configB64: string) {
+  if (!/^[A-Za-z0-9+/=]+$/.test(configB64) || configB64.length > 90_000) throw new AdapterError('bad_args', 'Invalid launcher config');
+  const r = await sh(ctx, `am broadcast -a ${LAUNCHER_PKG}.CONFIG -n ${LAUNCHER_PKG}/.ConfigReceiver --es config_b64 ${configB64}`);
+  const b = parseBroadcast(r.stdout);
+  if (b.result === 1 && b.data?.startsWith('ok:')) return { ok: true, sha: b.data.slice(3) };
+  return { ok: false, detail: b.data ?? (r.stdout.trim().slice(-200) || 'No answer from the Screens Launcher (is it installed?)') };
+}
+
+async function launcherStatus(ctx: AdapterCtx) {
+  const r = await sh(ctx, `am broadcast -a ${LAUNCHER_PKG}.STATUS -n ${LAUNCHER_PKG}/.ConfigReceiver`);
+  const b = parseBroadcast(r.stdout);
+  if (b.result === 1 && b.data?.startsWith('status:')) {
+    const st = parseJson<any>(b.data.slice(7), {});
+    return { installed: true, version: st.version ?? null, config_sha: st.config_sha ?? null, is_home: !!st.is_home, checked_at: Date.now() };
+  }
+  return { installed: false, checked_at: Date.now() };
+}
 
 async function listApps(ctx: AdapterCtx) {
   const r = await sh(ctx, APPS_CMD, 90_000);

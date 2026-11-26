@@ -186,3 +186,15 @@ UU/DlCFPff1UUNlBsF7h
     expect(certNotAfter(pem)).toBe(1803461066000);
   });
 });
+
+import { parseBroadcast } from '../src/worker/adapters/android';
+describe('launcher broadcast parsing', () => {
+  it('parses am broadcast results', () => {
+    expect(parseBroadcast('Broadcasting: Intent { act=x }\nBroadcast completed: result=1, data="ok:abc123"\n')).toEqual({ result: 1, data: 'ok:abc123' });
+    const st = parseBroadcast('Broadcast completed: result=1, data="status:{\\"version\\":\\"1.0.0\\",\\"is_home\\":true}"');
+    expect(st.result).toBe(1);
+    expect(JSON.parse(st.data!.slice(7))).toEqual({ version: '1.0.0', is_home: true });
+    expect(parseBroadcast('Broadcast completed: result=0')).toEqual({ result: 0, data: null });
+    expect(parseBroadcast('Error: no receiver').result).toBeNull();
+  });
+});
