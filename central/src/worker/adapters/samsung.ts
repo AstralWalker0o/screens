@@ -85,11 +85,12 @@ export const samsung: Adapter = {
     return {
       status: power === 'standby' ? 'standby' : 'online', power,
       manufacturer: 'Samsung', model: d.modelName ?? d.model ?? null, os_version: d.OS ? `${d.OS}` : 'Tizen',
-      firmware: d.firmwareVersion ?? d.version ?? null, mac: d.wifiMac ?? undefined,
+      firmware: d.firmwareVersion ?? d.version ?? null,
       facts: {
         token_auth: String(d.TokenAuthSupport ?? 'true') === 'true', frame_tv: String(d.FrameTVSupport) === 'true',
         resolution: d.resolution ?? null, network_type: d.networkType ?? null, tv_name: d.name ?? info.name ?? null,
         model_code: d.model ?? null, voice_support: d.VoiceSupport ?? null, developer_mode: d.developerMode ?? null,
+        wifi_mac: d.wifiMac ?? null, // the TV reports its Wi-Fi MAC even when wired; WoL uses the ARP-learned MAC
       },
     };
   },
@@ -112,7 +113,7 @@ export const samsung: Adapter = {
         return { ok: true };
       }
       case 'power_on': {
-        const mac = ctx.device.mac;
+        const mac = ctx.device.mac ?? parseJson<any>(ctx.device.facts, {}).wifi_mac ?? null;
         if (mac) await ctx.gw('net.wol', { mac }, 5000).catch(() => undefined);
         await sleep(1500);
         const info = await deviceInfo(ctx);

@@ -1,6 +1,6 @@
 import { Hono } from 'hono';
 import type { DnsCategory, DnsPolicyName, PrivacyOverview } from '../../shared/types';
-import { compilePolicies, refreshLists, ensureListSources, POLICIES } from '../dns/compile';
+import { classify, compilePolicies, refreshLists, ensureListSources, POLICIES } from '../dns/compile';
 import { audit, type Row } from '../lib/db';
 import { originOf, pushDnsAll } from '../lib/hub';
 import { domainValid, HttpError, now, parseJson } from '../lib/util';
@@ -22,10 +22,19 @@ dnsRoutes.get('/privacy', async (c) => {
   for (const r of acr.results) acrBy.set(r.device_id, (acrBy.get(r.device_id) ?? 0) + (parseJson<any>(r.cats, {}).acr ?? 0));
   const bypassSet = new Set(bypass.results.map((r) => r.device_id));
   const rules = new Map((await env.DB.prepare("SELECT domain, action FROM dns_rules WHERE scope_type = 'global'").all<Row>()).results.map((r) => [r.domain, r.action]));
+  const acrRows = (await env.DB.prepare("SELECT domain, sum(queries) q, sum(blocked) b, count(DISTINCT device_id) d FROM dns_daily WHERE category = 'acr' AND day >= ? GROUP BY domain").bind(new Date(Date.now() - 7 * 86_400_000).toISOString().slice(0, 10)).all<Row>()).results;
+  const byVendor = new Map<string, { vendor: string; attempts: number; blocked: number; devices: number }>();
+  for (const r of acrRows) {
+    const vendor = classify(r.domain).vendor ?? vendorFromDomain(r.domain);
+    const v = byVendor.get(vendor) ?? { vendor, attempts: 0, blocked: 0, devices: 0 };
+    v.attempts += r.q; v.blocked += r.b; v.devices = Math.max(v.devices, r.d);
+    byVendor.set(vendor, v);
+  }
   const out: PrivacyOverview = {
     devices: devices.results.map((d) => ({ device_id: d.id, name: d.name, site_id: d.site_id, site_name: d.site_name, kind: d.kind, score: d.privacy_score ?? 0, grade: d.privacy_score == null ? '?' : grade(d.privacy_score), bypass_suspected: bypassSet.has(d.id), acr_24h: acrBy.get(d.id) ?? 0 })),
     fleet: await fleetDnsSummary(env, { hours: 24 }),
     new_domains: fresh.results.map((r) => ({ domain: r.domain, category: r.category, vendor: r.vendor, queries: r.queries, blocked: r.blocked, would_block: r.would_block, first_seen: r.first_seen, last_seen: r.last_seen, rule: (rules.get(r.domain) as any) ?? null })),
+    acr_by_vendor: [...byVendor.values()].sort((a, b) => b.attempts - a.attempts),
   };
   return c.json(out);
 });
@@ -120,3 +129,12 @@ dnsRoutes.post('/dns/rebuild', async (c) => {
   const rows = await c.env.DB.prepare('SELECT policy, sha256, rules, built_at FROM dns_policy_builds').all<Row>();
   return c.json({ builds: rows.results });
 });
+
+/** Best-effort vendor name for an uncatalogued ACR domain: its registrable-ish name. */
+function vendorFromDomain(d: string): string {
+  const parts = d.split('.');
+  const base = parts.length >= 3 && /^(com|net|org|co)$/.test(parts[parts.length - 2]) ? parts[parts.length - 3] : parts[parts.length - 2] ?? d;
+  if (/samsung/.test(d)) return 'Samsung';
+  if (/lg(e|smartad|tvsdp)|alphonso/.test(d)) return 'LG';
+  return base.charAt(0).toUpperCase() + base.slice(1);
+}

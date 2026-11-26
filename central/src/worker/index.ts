@@ -74,6 +74,20 @@ async function scheduled(controller: ScheduledController, env: Env, ctx: Executi
     })());
   }
 
+  // Retention: daily at 17:37 UTC keep 180 days of daily DNS rollups, 35 days hourly, 90 days of jobs/audit, resolved alerts 90 days.
+  if (d.getUTCHours() === 17 && d.getUTCMinutes() === 37) {
+    const day = (n: number) => new Date(t - n * 86_400_000).toISOString().slice(0, 10);
+    ctx.waitUntil(env.DB.batch([
+      env.DB.prepare('DELETE FROM dns_daily WHERE day < ?').bind(day(180)),
+      env.DB.prepare('DELETE FROM dns_hourly WHERE hour < ?').bind(t - 35 * 86_400_000),
+      env.DB.prepare('DELETE FROM jobs WHERE created_at < ?').bind(t - 90 * 86_400_000),
+      env.DB.prepare('DELETE FROM audit_log WHERE at < ?').bind(t - 365 * 86_400_000),
+      env.DB.prepare('DELETE FROM alerts WHERE resolved_at IS NOT NULL AND resolved_at < ?').bind(t - 90 * 86_400_000),
+      env.DB.prepare('DELETE FROM enrollment_tokens WHERE expires_at < ?').bind(t - 7 * 86_400_000),
+      env.DB.prepare('DELETE FROM discovered WHERE last_seen < ?').bind(t - 30 * 86_400_000),
+    ]).then(() => undefined));
+  }
+
   // Scheduled automations, evaluated in each site's timezone unless the automation sets one.
   const autos = (await env.DB.prepare("SELECT * FROM automations WHERE enabled = 1 AND json_extract(trigger, '$.type') = 'schedule'").all<Row>()).results.map(toAutomation);
   for (const a of autos) {

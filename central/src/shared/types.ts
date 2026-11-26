@@ -182,6 +182,8 @@ export interface PrivacyOverview {
   devices: { device_id: string; name: string; site_id: string; site_name: string; kind: DeviceKind; score: number; grade: string; bypass_suspected: boolean; acr_24h: number }[];
   fleet: DnsSummary;
   new_domains: DnsDomainStat[];
+  /** Viewing-tracking (ACR) lookups in the last 7 days, grouped by vendor. */
+  acr_by_vendor: { vendor: string; attempts: number; blocked: number; devices: number }[];
 }
 
 export interface DnsRule {

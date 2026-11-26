@@ -112,7 +112,7 @@ export const lg: Adapter = {
       return {
         status: 'online', power: 'on', manufacturer: 'LG', model: sys.modelName ?? null,
         os_version: sw.product_name ? `${sw.product_name} ${sw.major_ver ?? ''}.${sw.minor_ver ?? ''}`.trim() : 'webOS',
-        firmware: sw.firmware_revision ?? null, mac: sw.device_id ?? undefined, current_app: fg.appId ?? null,
+        firmware: sw.firmware_revision ?? null, current_app: fg.appId ?? null,
         facts: { receiver_type: sys.receiverType ?? null, sw },
       };
     } catch (e: any) {

@@ -140,13 +140,14 @@ export const android: Adapter = {
       sdk: Number(m.sdk) || null, build: m.build || null, screen, uptime_s: Number(m.uptime) || null,
       private_dns_mode: m.pdns_mode || null, private_dns_host: m.pdns_host && m.pdns_host !== 'null' ? m.pdns_host : null,
       device_name: m.device_name && m.device_name !== 'null' ? m.device_name : null,
+      reported_mac: m.mac || null, // informational: the active-interface MAC comes from the gateway's ARP table
     };
     return {
       status: 'online',
       power: wake === 'Awake' ? 'on' : wake ? 'standby' : 'unknown',
       manufacturer: m.manufacturer || null, model: m.model || null,
       os_version: m.release ? `Android ${m.release}` : null, serial: m.serial || null, firmware: m.build || null,
-      current_app: parseResumed(m.resumed ?? ''), mac: m.mac || undefined,
+      current_app: parseResumed(m.resumed ?? ''),
       private_dns: facts.private_dns_mode === 'hostname' ? facts.private_dns_host : null,
       facts,
     };
