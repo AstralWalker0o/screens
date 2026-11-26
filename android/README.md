@@ -1,8 +1,11 @@
 # Screens Launcher (Android TV)
 
-The kiosk launcher and guest welcome screen that Screens installs on Android TV boxes
-(`au.supercluster.screens.launcher`). The contract it implements (components, config JSON,
-broadcast protocol and kiosk rules) is in [`../docs/LAUNCHER.md`](../docs/LAUNCHER.md).
+The home screen, kiosk launcher and guest welcome screen that Screens installs on Android TV
+boxes (`au.supercluster.screens.launcher`, version 2.0.0 / versionCode 20000). The contracts it
+implements are [`../docs/LAUNCHER.md`](../docs/LAUNCHER.md) (v1: components, config JSON, broadcast
+protocol, kiosk rules, welcome screen) and [`../docs/LAUNCHER-V2.md`](../docs/LAUNCHER-V2.md) (v2:
+the wallpaper-and-rows home screen, image assets pushed through a ContentProvider, and extended
+STATUS).
 
 **Privacy:** the app has no `INTERNET` permission, no analytics and no network code. Everything
 arrives over adb from the Screens gateway. On top of that:
@@ -10,11 +13,16 @@ arrives over adb from the Screens gateway. On top of that:
 - androidx's `EmojiCompatInitializer` is removed from the manifest, because it would otherwise ask
   the Play Services font provider for a downloadable emoji font;
 - backups and device-to-device transfer are disabled, since the config holds the guest Wi-Fi
-  password and the kiosk PIN hash;
-- the config receiver never logs the config itself.
+  password and the kiosk PIN hash (pushed images in `files/assets/` are excluded too);
+- the config receiver never logs the config itself;
+- the config receiver and the assets provider both require `android.permission.DUMP`, which only
+  the adb shell and the system hold.
 
 Check with `aapt2 dump permissions dist/screens-launcher.apk`. The only permissions are
-`RECEIVE_BOOT_COMPLETED` and androidx's signature-level `DYNAMIC_RECEIVER_NOT_EXPORTED_PERMISSION`.
+`RECEIVE_BOOT_COMPLETED`, `ACCESS_NETWORK_STATE` and androidx's signature-level
+`DYNAMIC_RECEIVER_NOT_EXPORTED_PERMISSION`. `ACCESS_NETWORK_STATE` (new in 2.0.0) is a normal,
+install-time permission that only lets the home screen's top bar show whether the box is on Wi-Fi
+or Ethernet. It grants no network access.
 
 ## Build
 
@@ -38,12 +46,36 @@ Point the build at the SDK with `ANDROID_HOME=/opt/android-sdk`, or with a git-i
 
 ```sh
 cd android
-./gradlew test               # JVM unit tests (config parsing, app ordering, Wi-Fi QR, PIN)
+./gradlew testDebugUnitTest assembleDebug   # all JVM tests + app/build/outputs/apk/debug/app-debug.apk
 ./gradlew assembleRelease    # app/build/outputs/apk/release/app-release.apk
 mkdir -p dist && cp app/build/outputs/apk/release/app-release.apk dist/screens-launcher.apk
 ```
 
 `dist/`, `build/`, `.gradle/`, `local.properties` and every `*.keystore` / `*.jks` are git-ignored.
+
+### Tests and screenshots
+
+`testDebugUnitTest` runs, all on the JVM:
+
+- plain unit tests in `src/test/kotlin/…/core/`: config v1 and v2 parsing and limits, home rows
+  (kiosk filtering, hidden apps, All apps, tile overrides), asset path validation, SHA-256
+  ingest, cleanup and eviction selection, STATUS, app ordering, Wi-Fi QR, PIN;
+- Robolectric tests of the assets provider (`AssetProviderTest`) and the CONFIG/STATUS handler
+  (`ConfigReceiverTest`);
+- **screenshot tests** (`ui/HomeScreenshotTest.kt`): Robolectric native graphics with Roborazzi
+  render the real home screen at 1920 × 1080 from `src/test/resources/config-v2-sample.json`,
+  with a procedurally drawn wallpaper and placeholder banners (`ui/TestArt.kt`, no third-party
+  artwork). By default the PNGs go to `app/build/outputs/snapshots/`. To refresh the committed
+  reference images in `app/src/test/snapshots/`:
+
+  ```sh
+  ./gradlew testDebugUnitTest -PrecordSnapshots
+  ```
+
+Robolectric, Roborazzi and the Compose test libraries are `testImplementation` only. They are
+never packaged into the APK. On its first run Robolectric downloads its Android framework jar
+(about 200 MB) from Maven Central. If a proxy rate-limits the download, re-run with
+`--max-workers=1`.
 
 ### Release signing
 
@@ -88,17 +120,38 @@ adb shell am broadcast -a au.supercluster.screens.launcher.CONFIG \
 
 adb shell am broadcast -a au.supercluster.screens.launcher.STATUS \
   -n au.supercluster.screens.launcher/.ConfigReceiver
-# → result=1, data="status:{"version":"1.0.0","config_sha":"…","is_home":true}"
+# → result=1, data="status:{"version":"2.0.0","version_code":20000,"config_sha":"…","config_v":2,
+#    "is_home":true,"assets":[…],"missing_assets":[],"last_error":null}"   (one line)
 
 adb shell am start -n au.supercluster.screens.launcher/.WelcomeActivity
+
+# v2 image assets (wallpaper, card art): push, hand over to the app, then confirm
+SHA=$(sha256sum wallpaper.jpg | cut -d' ' -f1)
+adb push wallpaper.jpg /data/local/tmp/screens-asset-$SHA.jpg
+adb shell "content write --uri content://au.supercluster.screens.launcher.assets/$SHA.jpg < /data/local/tmp/screens-asset-$SHA.jpg; rm -f /data/local/tmp/screens-asset-$SHA.jpg"
+adb shell content query --uri content://au.supercluster.screens.launcher.assets/
+# → Row: 0 sha256=<sha>, bytes=<n>
 ```
 
-`ConfigReceiver` is protected by `android.permission.DUMP`, so only the adb shell or the system
-can deliver config.
+`ConfigReceiver` and `AssetProvider` are protected by `android.permission.DUMP`, so only the adb
+shell or the system can deliver config or images. `content write` always exits 0. The image is
+verified after the shell closes the pipe, so an asset counts as delivered only once
+`content query` lists it (see [`../docs/LAUNCHER-V2.md`](../docs/LAUNCHER-V2.md) §1.1).
 
 ## Behaviour
 
-- **Launcher.** HOME + LEANBACK_LAUNCHER, `singleTask`. It has a dark 10-foot UI with the site name
+- **v2 home screen** (config `"v": 2` with `home`). A full-bleed wallpaper (a pushed asset,
+  dimmed, with soft left and bottom gradients; a dark accent-tinted gradient when there is none)
+  sits behind a top bar with the network glyph, a settings gear and a large thin clock. Below it
+  are titled rows of app cards: banner, icon or poster, in three sizes. The focused card zooms
+  (150 ms) with a white outline and a soft glow; its row sits 40 % down the screen and the rows
+  above it fade out. D-pad left/right moves within a row and up/down moves between rows,
+  keeping the column. Up from the first row reaches the gear, and OK launches. Hidden apps
+  appear nowhere, and an All apps row lists the rest. In kiosk mode only `kiosk.allowed` apps
+  appear and the gear asks for the PIN. Details: [`../docs/LAUNCHER-V2.md`](../docs/LAUNCHER-V2.md)
+  §3. Screenshots: `app/src/test/snapshots/`.
+- **Launcher (v1 grid).** Used for v1 configs and v2 configs without `home`. HOME +
+  LEANBACK_LAUNCHER, `singleTask`. It has a dark 10-foot UI with the site name
   on the left, the clock and date on the right, and the accent colour from the config. App cards
   show the app's TV banner, or its icon if it has none, and you move between them with the D-pad.
   Back does nothing. Pressing Home while already home returns focus to the first card. The app
@@ -130,7 +183,7 @@ Configs are checked strictly. One bad value rejects the whole config with
 | Rule | Detail |
 |---|---|
 | Size | Decoded JSON ≤ 64 KB, strict UTF-8, one top-level object, nesting ≤ 32 |
-| Version | `v` must be `1` |
+| Version | `v` must be `1` or `2`. v2-only rules (`home`, and the wider v2 package-name rule) are in [`../docs/LAUNCHER-V2.md`](../docs/LAUNCHER-V2.md) §2.1 |
 | Unknown fields | Ignored; `null` means "not set" for optional fields |
 | Package names | `kiosk.allowed` and `pinned` entries must match `^[A-Za-z][A-Za-z0-9_]*(\.[A-Za-z][A-Za-z0-9_]*)+$` (≤ 255 chars); at most 500 per list; duplicates dropped |
 | `kiosk.pin_sha256` | 64 hex characters (any case) or `null` |
@@ -157,19 +210,29 @@ android/
         ├── main/kotlin/au/supercluster/screens/launcher/
         │   ├── LauncherActivity.kt, WelcomeActivity.kt
         │   ├── ConfigReceiver.kt, BootReceiver.kt
+        │   ├── AssetProvider.kt        # v2 image assets: content write / query / delete (DUMP)
         │   ├── core/                   # plain Kotlin, unit-tested on the JVM
         │   │   ├── Json.kt             # strict JSON reader/writer with depth cap
-        │   │   ├── ConfigParser.kt     # base64 → JSON → validated LauncherConfig
+        │   │   ├── ConfigParser.kt     # base64 → JSON → validated LauncherConfig (v1 and v2)
         │   │   ├── LauncherConfig.kt, AppSelector.kt, WifiQr.kt, Pin.kt, Hashing.kt, StatusReport.kt
-        │   ├── data/                   # Android glue: ConfigStore, AppRepository, HomeStatus
-        │   └── ui/                     # Compose for TV: LauncherScreen, PinDialog, WelcomeScreen, QrCode, Theme
+        │   │   ├── HomeLayout.kt       # v2 rows: kiosk filter, hidden, All apps, tile overrides
+        │   │   └── Assets.kt           # asset names, SHA-256 ingest, cleanup/eviction, last_error
+        │   ├── data/                   # Android glue: ConfigStore, AppRepository, HomeStatus,
+        │   │                           # AssetStore (pipe upload), ArtLoader (bitmap cache),
+        │   │                           # NetworkMonitor, Diagnostics (last_error)
+        │   └── ui/                     # Compose for TV: HomeScreen, HomeCard, Glyphs, Art (v2);
+        │                               # LauncherScreen (v1 grid), PinDialog, WelcomeScreen, QrCode, Theme
         ├── main/res/                   # vector icon (adaptive) and banner, strings, theme
-        └── test/kotlin/…/core/         # JUnit tests
+        ├── test/kotlin/…/core/         # JUnit tests
+        ├── test/kotlin/…/              # Robolectric: AssetProviderTest, ConfigReceiverTest,
+        │                               # ui/HomeScreenshotTest (+ TestArt)
+        ├── test/resources/config-v2-sample.json
+        └── test/snapshots/             # reference screenshots (1920 × 1080 PNG)
 ```
 
 Dependencies: AndroidX (core-ktx, activity-compose, lifecycle-runtime-compose, Compose UI and
-foundation, `androidx.tv:tv-material`) plus `com.google.zxing:core` for the QR code. JUnit is used
-for tests only.
+foundation, `androidx.tv:tv-material`) plus `com.google.zxing:core` for the QR code. Test only:
+JUnit, Robolectric, Roborazzi and `androidx.compose.ui:ui-test-junit4`.
 
 ## Release builds for Screens (permanent signing key)
 

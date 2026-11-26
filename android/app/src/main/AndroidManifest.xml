@@ -6,8 +6,11 @@
     <uses-feature android:name="android.software.leanback" android:required="false" />
     <uses-feature android:name="android.hardware.touchscreen" android:required="false" />
 
-    <!-- The only permission: to set "welcome pending" at boot. No INTERNET, ever. -->
+    <!-- No INTERNET, ever. RECEIVE_BOOT_COMPLETED sets "welcome pending" at boot.
+         ACCESS_NETWORK_STATE (normal, install-time) only reads whether the box is on Wi-Fi or
+         Ethernet for the home screen's network glyph; it grants no network access. -->
     <uses-permission android:name="android.permission.RECEIVE_BOOT_COMPLETED" />
+    <uses-permission android:name="android.permission.ACCESS_NETWORK_STATE" />
 
     <!-- Android 11+ package visibility: we only need to see launchable apps and the home resolver. -->
     <queries>
@@ -72,6 +75,16 @@
             android:name=".ConfigReceiver"
             android:exported="true"
             android:permission="android.permission.DUMP" />
+
+        <!-- Image assets (wallpaper, card art) pushed with `content write`. Read and write both
+             need DUMP, so only the adb shell or the system can use it (docs/LAUNCHER-V2.md). -->
+        <provider
+            android:name=".AssetProvider"
+            android:authorities="au.supercluster.screens.launcher.assets"
+            android:exported="true"
+            android:grantUriPermissions="false"
+            android:readPermission="android.permission.DUMP"
+            android:writePermission="android.permission.DUMP" />
 
         <!-- BOOT_COMPLETED is a protected broadcast sent by the system, which may target
              non-exported receivers, so this one is not exported at all. -->

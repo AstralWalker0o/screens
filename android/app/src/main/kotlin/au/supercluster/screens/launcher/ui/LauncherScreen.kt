@@ -62,12 +62,17 @@ import java.text.SimpleDateFormat
 import java.util.Date
 import java.util.Locale
 
-private val ScreenPadding = 48.dp // TV overscan-safe horizontal margin
 private val CardShape = RoundedCornerShape(14.dp)
 private const val COLUMNS = 5
 
+// Artwork size for the v1 grid (as in 1.x): banners 384x216 px, icons 160 px.
+private const val BANNER_W = 384
+private const val BANNER_H = 216
+private const val ICON_PX = 160
+
 /**
- * The home screen: header (site name, clock + date) and a D-pad grid of app cards.
+ * The v1 home screen (configs without `home`): header (site name, clock + date) and a D-pad
+ * grid of app cards. Configs with `home` use [HomeScreen].
  *
  * In kiosk mode there is no Settings tile; instead the clock is focusable and a long-press on
  * it asks for the PIN (or opens settings straight away when no PIN is configured).
@@ -182,11 +187,12 @@ private fun Header(
 @Composable
 private fun Clock(modifier: Modifier = Modifier) {
     val context = LocalContext.current
+    val now = LocalNow.current
     // Formatters are rebuilt on every tick so 12/24 h, locale and time zone changes show up at once.
-    val text by produceState(initialValue = formatNow(context)) {
+    val text by produceState(initialValue = formatNow(context, now())) {
         while (true) {
-            value = formatNow(context)
-            delay(1_000L - System.currentTimeMillis() % 1_000L)
+            value = formatNow(context, now())
+            delay(1_000L - now() % 1_000L)
         }
     }
     Column(modifier, horizontalAlignment = Alignment.End) {
@@ -204,8 +210,8 @@ private fun Clock(modifier: Modifier = Modifier) {
     }
 }
 
-private fun formatNow(context: android.content.Context): Pair<String, String> {
-    val now = Date()
+private fun formatNow(context: android.content.Context, millis: Long): Pair<String, String> {
+    val now = Date(millis)
     val locale = Locale.getDefault()
     val time = DateFormat.getTimeFormat(context).format(now)
     val date = SimpleDateFormat(DateFormat.getBestDateTimePattern(locale, "EEEEdMMMM"), locale).format(now)
@@ -243,10 +249,15 @@ private fun AppGrid(
         modifier = Modifier.fillMaxSize(),
     ) {
         itemsIndexed(apps, key = { _, app -> app.key }) { index, app ->
+            val art = rememberArt(
+                remember(app.candidate) {
+                    ArtRequest.AppCard(app.candidate, BANNER_W, BANNER_H, ICON_PX, preferBanner = true)
+                },
+            )
             AppCard(
                 label = app.label,
-                banner = app.banner,
-                icon = app.icon,
+                banner = art?.bitmap?.takeIf { art.kind == ArtKind.BANNER },
+                icon = art?.bitmap?.takeIf { art.kind == ArtKind.ICON },
                 focusRequester = if (index == 0) firstFocus else null,
                 onClick = { onLaunch(app) },
             )
