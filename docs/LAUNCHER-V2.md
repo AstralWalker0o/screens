@@ -133,3 +133,97 @@ Package names match `^[a-zA-Z][a-zA-Z0-9_]*(\.[a-zA-Z0-9_]+)+$`.
 - **Performance:** banner bitmaps are decoded once and cached, and there's no
   jank on a 2019 Shield.
 - The welcome screen and the kiosk PIN dialog work as in v1.
+
+## 4. Cloud side (Screens central)
+
+This section describes what the hub does. It adds nothing the app has to
+implement.
+
+### 4.1 Where layouts live
+
+- D1 `launcher_layouts` (migration 0004) stores the `home` object plus a name
+  and an optional `accent`. Each layout belongs to a site, or is a fleet
+  template (`site_id` NULL).
+- `sites.launcher_layout_id` is the site's layout. `devices.launcher_layout_id`
+  overrides it for one box ("use a different layout on this box").
+- Images are in `launcher_assets` (metadata) and R2 at
+  `launcher/assets/<sha256>.<ext>`.
+- Routes: docs/API.md, "Screens Launcher v2". The dashboard editor is the
+  site's **Home screen** tab.
+
+### 4.2 Which config a box gets
+
+| Box | Has a layout | Sent |
+|---|---|---|
+| launcher 2.x (`version_code ≥ 20000` or major ≥ 2) | yes | config `v: 2` with `home`, after copying any missing images |
+| launcher 2.x | no | config `v: 1`, unchanged (a 2.x app must accept it) |
+| launcher 1.x | either | config `v: 1`, and no images (the 1.0 app rejects `"v": 2` and has no provider) |
+| unknown (STATUS unreadable) | either | config `v: 1` |
+
+The config JSON is built in one place (`central/src/shared/launcher.ts`) with
+a fixed key order. The SHA-256 the hub expects is therefore reproducible, and
+the v1 bytes are identical to what Screens sent before v2.
+
+The top-level `accent` is the layout's accent when it has one, otherwise the
+welcome accent. 1.x boxes always get the welcome accent.
+
+### 4.3 Push pipeline (per box, `launcher_config` / `launcher_install`)
+
+```sh
+# 1. STATUS: am broadcast --include-stopped-packages -a au.supercluster.screens.launcher.STATUS -n au.supercluster.screens.launcher/.ConfigReceiver
+#    The "assets" list says what the box has. If a 2.x STATUS lacks it, the hub falls back to:
+content query --uri content://au.supercluster.screens.launcher.assets/ 2>&1
+# 2. For each image the layout references that the box doesn't have (2.x only):
+#    gateway op adb.push {serial, url: <signed R2 URL, 30 min>, sha256, remote_path: /data/local/tmp/screens-asset-<sha>.<ext>}
+content write --uri content://au.supercluster.screens.launcher.assets/<sha>.<ext> < /data/local/tmp/screens-asset-<sha>.<ext> 2>&1; echo "@@rc=$?"; rm -f /data/local/tmp/screens-asset-<sha>.<ext>
+#    A non-zero rc, or "exception" / "error" in the output, counts as a failed image.
+# 3. am broadcast … .CONFIG --es config_b64 <base64>  →  ok:<sha>, which must equal the SHA-256 of the bytes sent.
+# 4. STATUS again; the result is stored in Device.facts.launcher.
+```
+
+- A failed image doesn't block the config: the box shows its fallback and
+  reports the SHA in `missing_assets`.
+- Screens records `pushed_at`, `pushed_sha`, `pushed_v`, `push_error`,
+  `layout_id` and `assets_pushed` next to the STATUS fields in
+  `facts.launcher`.
+- A box is "in sync" when its `config_sha` equals the SHA expected for its
+  version.
+
+### 4.4 When the hub pushes
+
+- **Layout saved:** every box whose effective layout it is.
+- **Site layout or box override changed:** those boxes.
+- **Guest welcome or kiosk saved:** every box at the site (as in v1).
+- **"Push now":** from the dashboard.
+- **After the gateway reconnects, when a box comes back online, and every 30
+  minutes:** the hub reads STATUS quietly and pushes only if `config_sha`
+  differs from the expected SHA. It also pushes if `missing_assets` is
+  non-empty and the last push was more than 30 minutes ago.
+
+### 4.5 Cloud-side checks beyond the contract
+
+The app doesn't need any of these. They keep bad input from ever reaching a
+box.
+
+- Uploads must be JPEG, PNG or WebP by magic bytes, ≤ 8 MB and **≤ 4096 px on
+  the longest side** (the pixel limit is cloud-only).
+- The dashboard resizes wallpapers to 1920 × 1080 JPEG (q≈0.85) and card art
+  to ≤ 1280 px before uploading.
+- A layout is rejected unless its v2 config, including each using site's
+  welcome and kiosk settings, stays ≤ 48 KB.
+- Every image the layout references must already be uploaded, ≤ 64 MB in
+  total.
+- Duplicate packages within one row, or in `hidden`, are dropped. Tile
+  overrides with neither a label nor an image are dropped.
+- `home.rows` must have at least one row, as in §2. The editor won't delete
+  the last row.
+
+### 4.6 Simulator
+
+`tools/sim/sim.py` emulates the 2.x app by default: v2 STATUS, the asset
+provider with SHA checks on `content write`, and v1 + v2 configs. An APK
+containing the bytes `SCREENS_LAUNCHER_V1` installs as the 1.0.0 app instead.
+
+The simulator also accepts `content delete --uri …/<sha>.<ext>` so the e2e test
+can make a box lose an image. The contract doesn't require the real app to
+support it.

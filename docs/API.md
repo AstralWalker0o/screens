@@ -67,6 +67,29 @@ Errors are `{ "error": "code", "message": "human text" }` with a 4xx/5xx status.
 | GET | `/api/audit?limit=&site_id=` | | `AuditEntry[]` |
 | GET / PUT | `/api/settings` | `AppSettings` | `AppSettings` |
 
+## Screens Launcher v2: home screens (docs/LAUNCHER-V2.md)
+
+Types are in `central/src/shared/launcher.ts`. A layout is the config v2 `home` object plus a name and an optional accent. It belongs to a site, or is a fleet template (`site_id: null`) that any site can use or copy. A box shows its own override if it has one, otherwise the site's layout. Without a layout it shows the classic v1 grid.
+
+| Method | Path | Body | Returns |
+|---|---|---|---|
+| GET | `/api/launcher/layouts?site_id=` | | `LauncherLayout[]`: that site's layouts plus the fleet templates. `?templates=1` returns templates only, and no parameter returns all. Each layout has `used_by: {sites, devices}`. |
+| GET | `/api/launcher/layouts/:id` | | `LauncherLayout` |
+| POST | `/api/launcher/layouts` | `{site_id \| null, name, home?, accent?, from_id?, make_default?}` | `LauncherLayout` (201). `from_id` copies another layout's `home`/`accent`. `make_default` makes it the site's layout and pushes it. |
+| PUT | `/api/launcher/layouts/:id` | `{name?, home?, accent?}` | `LauncherLayout`. When `home` or `accent` changes, it's pushed in the background to every box using it. |
+| DELETE | `/api/launcher/layouts/:id` | | `{ok}`. Sites and boxes that used it fall back (site layout, else the classic grid) and are re-pushed. |
+| POST | `/api/launcher/layouts/:id/copy` | `{site_id \| null, name?, make_default?}` | `LauncherLayout` (201): an independent copy for another site, or a new fleet template (`site_id: null`) |
+| POST | `/api/launcher/assets` | multipart `file` | `LauncherAsset & {url}` (201). JPEG, PNG or WebP only (checked by magic bytes), at most 8 MB and 4096 px per side. Stored in R2 at `launcher/assets/<sha256>.<ext>`, idempotent. The dashboard resizes wallpapers to 1920 × 1080 JPEG (q≈0.85) and card art to ≤ 1280 px first. |
+| GET | `/api/launcher/assets/:sha256.:ext` | | the image (for the dashboard preview) |
+| GET | `/api/sites/:id/launcher` | | `LauncherSiteState`: `{layout_id, layouts, devices: LauncherDeviceRollout[], latest_version}`. Per Android box it gives `override_layout_id`, effective `layout_id`, `launcher` (facts), `supports_v2`, `expected_v`, `expected_sha` and `in_sync` (`facts.launcher.config_sha === expected_sha`). |
+| PUT | `/api/sites/:id/launcher` | `{layout_id \| null}` | `{ok, layout_id}`: the site's layout (a layout of this site or a fleet template). Pushes to boxes without an override. |
+| POST | `/api/sites/:id/launcher/push` | `{device_ids?}` | `{results: {device_id, ok, detail?}[]}`: push now (waits). Only online boxes with the launcher installed. |
+| PUT | `/api/devices/:id/launcher` | `{layout_id \| null}` | `{ok, layout_id}`: "use a different layout on this box" (`null` = follow the site). Pushes to that box. |
+
+Layout validation follows the contract exactly: 1–12 rows, row ids `[a-z0-9_-]{1,32}` and unique, titles and labels ≤ 40 characters, the icon/card/size/label enums, 0–40 package names per row matching `^[a-zA-Z][a-zA-Z0-9_]*(\.[a-zA-Z0-9_]+)+$`, `dim` 0–0.8, `focus.scale` 1.0–1.25. The resulting config must be ≤ 48 KB including the site's welcome and kiosk settings, and every referenced picture must be uploaded (≤ 64 MB in total). Errors are `400 bad_layout` with a plain-English message.
+
+`Device.facts.launcher` (`LauncherState`) holds the app's STATUS (`version`, `version_code`, `config_sha`, `config_v`, `is_home`, `assets`, `missing_assets`, `last_error`) plus what Screens last sent: `pushed_at`, `pushed_sha`, `pushed_v`, `push_error`, `layout_id` and `assets_pushed`.
+
 ## Device commands (`POST /api/devices/:id/command`)
 
 Which commands are available depends on `Device.capabilities`.
@@ -122,10 +145,11 @@ Which commands are available depends on `Device.capabilities`.
 | `led` | `{on: bool}` | sonos |
 | `toast` | `{message}` | lg, android |
 | `guest_reset` | – | android (samsung: best-effort Home). Re-opens the launcher welcome screen when enabled. |
-| `launcher_install` | – | android: installs the Screens Launcher from the library, pushes the site's kiosk/welcome config and makes it the home screen |
-| `launcher_config` | – | android: re-push the site's kiosk/welcome config |
+| `launcher_install` | – | android: installs (or updates to) the newest Screens Launcher in the library, pushes its config (see `launcher_config`) and makes it the home screen |
+| `launcher_config` | – | android: push the box's config. 2.x boxes with a layout get config v2, after any missing pictures are copied over. 1.x boxes, and boxes without a layout, get the v1 kiosk/welcome config. → `{ok, detail?, config: {config_v, sha, expected_sha, assets_pushed, assets_failed}, status}` |
 | `launcher_status` | – | android → `{status: LauncherState}` (also stored in `facts.launcher`) |
 | `launcher_remove` | – | android: restore the stock launcher and uninstall |
+| `launcher_home` | – | android: make the installed Screens Launcher the home screen (`set-home-activity`, plus disabling the stock launcher when kiosk `force_home` is on) → `{status}` |
 | `welcome_show` | – | android: show the welcome screen now |
 
 Failed commands are stored on the device as `facts.last_error = {command, message, code, at}` (cleared when the same command next succeeds), so problems with quiet commands such as `media` and `volume` — which are not written to the audit log — stay visible. Background reads (`refresh`, `status`) don't overwrite it.

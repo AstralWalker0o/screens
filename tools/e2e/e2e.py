@@ -8,7 +8,7 @@ Prereqs (see README):
   - gateway binary built (gateway/dist/screens-gateway-linux-amd64)
 Run as root (DNS port 53, raw multicast).
 """
-import json, os, random, shutil, signal, socket, struct, subprocess, sys, tempfile, time, urllib.parse, urllib.request
+import hashlib, json, os, random, shutil, signal, socket, struct, subprocess, sys, tempfile, time, urllib.error, urllib.parse, urllib.request
 
 BASE = os.environ.get('CENTRAL', 'http://127.0.0.1:8787')
 ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), '..', '..'))
@@ -280,6 +280,103 @@ def main():
 
         except Exception as e:
             check('section screens launcher (kiosk + welcome) completed', False, str(e)[:300])
+        print('== screens launcher v2 (home screen layouts)')
+        try:
+            # docs/LAUNCHER-V2.md: layout → assets pushed only when missing → config v2 with a matching sha; 1.x boxes get v1.
+            d = api('GET', f'/api/devices/{sh}')
+            l0 = d['facts'].get('launcher', {})
+            check('sim launcher reports v2 STATUS (version 2.0.0, assets list)', l0.get('version') == '2.0.0' and l0.get('version_code') == 20000 and isinstance(l0.get('assets'), list), json.dumps(l0)[:300])
+            check('no layout yet → the 2.x box was sent config v1', l0.get('pushed_v') == 1 and l0.get('config_v') == 1, json.dumps(l0)[:300])
+
+            def multipart(path, name, data, ctype):
+                b = '----screensv2'
+                body = f'--{b}\r\nContent-Disposition: form-data; name="file"; filename="{name}"\r\nContent-Type: {ctype}\r\n\r\n'.encode() + data + f'\r\n--{b}--\r\n'.encode()
+                return json.loads(opener.open(urllib.request.Request(BASE + path, method='POST', data=body, headers={'content-type': f'multipart/form-data; boundary={b}'}), timeout=30).read())
+            # Minimal JPEG / PNG headers (the server sniffs magic bytes + size; it never decodes).
+            jpg = b'\xff\xd8\xff\xe0\x00\x10JFIF\x00\x01\x01\x00\x00\x01\x00\x01\x00\x00' + b'\xff\xc0\x00\x11\x08\x04\x38\x07\x80\x03\x01\x22\x00\x02\x11\x01\x03\x11\x01' + os.urandom(20000) + b'\xff\xd9'
+            png = b'\x89PNG\r\n\x1a\n\x00\x00\x00\x0dIHDR' + struct.pack('>II', 640, 360) + b'\x08\x06\x00\x00\x00' + os.urandom(4000)
+            wall = multipart('/api/launcher/assets', 'wall.jpg', jpg, 'image/jpeg')
+            tile = multipart('/api/launcher/assets', 'plex.png', png, 'image/png')
+            check('wallpaper + card picture uploaded (sha256, sniffed size)', wall['sha256'] == hashlib.sha256(jpg).hexdigest() and wall['width'] == 1920 and tile['ext'] == 'png', json.dumps([wall, tile])[:300])
+            try:
+                multipart('/api/launcher/assets', 'x.gif', b'GIF89a' + os.urandom(100), 'image/gif')
+                check('non-image upload rejected', False)
+            except urllib.error.HTTPError as e:
+                check('non-image upload rejected', e.code == 415, str(e.code))
+
+            home = {
+                'wallpaper': {'asset': wall['sha256'], 'ext': 'jpg', 'dim': 0.25},
+                'top_bar': {'clock': True, 'clock_24h': False, 'date': False, 'network': True, 'settings': True},
+                'rows': [
+                    {'id': 'featured', 'title': 'InterNik', 'icon': 'bookmark', 'card': 'banner', 'size': 'large', 'apps': ['com.netflix.ninja']},
+                    {'id': 'media', 'title': 'Media', 'icon': 'media', 'card': 'banner', 'size': 'medium', 'apps': ['au.com.stan.and', 'com.google.android.youtube.tv', 'com.spotify.tv.android']},
+                ],
+                'all_apps': {'enabled': True, 'title': 'All apps'}, 'hidden': ['com.android.vending'],
+                'tiles': {'au.com.stan.and': {'label': 'Stan', 'asset': tile['sha256'], 'ext': 'png'}},
+                'focus': {'scale': 1.12, 'label': 'focused'},
+            }
+            try:
+                api('POST', '/api/launcher/layouts', {'site_id': sid, 'name': 'Bad', 'home': {**home, 'rows': [{**home['rows'][0], 'icon': 'rocket'}]}})
+                check('invalid layout rejected', False)
+            except AssertionError as e:
+                check('invalid layout rejected', '400' in str(e) and 'icon' in str(e), str(e)[:200])
+            t5 = time.time()
+            lay = api('POST', '/api/launcher/layouts', {'site_id': sid, 'name': 'Living room', 'home': home, 'make_default': True})
+            check('layout saved and made the site default', lay['home'] == home and lay['used_by']['sites'] == [sid], json.dumps(lay)[:300])
+
+            def rollout(dev_id):
+                return next(x for x in api('GET', f'/api/sites/{sid}/launcher')['devices'] if x['device_id'] == dev_id)
+            r = wait(lambda: (lambda x: x if x['in_sync'] and x['expected_v'] == 2 else None)(rollout(sh)), 90, 2)
+            check('saving pushed config v2 and the box reports the matching sha', bool(r), json.dumps(rollout(sh))[:400])
+            pushes = [e for e in sim_events('android.push', t5) if e['ip'] == '10.99.0.10' and '/screens-asset-' in e['path']]
+            writes = [e for e in sim_events('android.content_write', t5) if e['ip'] == '10.99.0.10' and e['ok']]
+            check('both pictures pushed to /data/local/tmp then handed over with content write', sorted(p['path'] for p in pushes) == sorted([f'/data/local/tmp/screens-asset-{wall["sha256"]}.jpg', f'/data/local/tmp/screens-asset-{tile["sha256"]}.png']) and len(writes) == 2, json.dumps([pushes, writes])[:400])
+            cfgs = [e for e in sim_events('android.launcher_config', t5) if e['ip'] == '10.99.0.10']
+            check('config broadcast was v2 with both rows', cfgs and cfgs[-1]['v'] == 2 and cfgs[-1]['rows'] == 2, json.dumps(cfgs)[:300])
+            l = api('GET', f'/api/devices/{sh}')['facts']['launcher']
+            check('device facts: version, config sha, assets, pushed_at, layout', l['version'] == '2.0.0' and l['config_v'] == 2 and l['config_sha'] == r['expected_sha'] and set(l['assets']) >= {wall['sha256'], tile['sha256']}
+                  and l['missing_assets'] == [] and l['pushed_v'] == 2 and l['pushed_at'] and l['push_error'] is None and l['layout_id'] == lay['id'], json.dumps(l)[:400])
+
+            t6 = time.time()
+            res = api('POST', f'/api/sites/{sid}/launcher/push', {'device_ids': [sh]})
+            check('push now: ok, and no picture re-sent when nothing is missing', res['results'] and all(x['ok'] for x in res['results']) and not [e for e in sim_events('android.push', t6) if '/screens-asset-' in e['path']], json.dumps(res)[:300])
+            # Remove one picture on the box: the next push copies only that one.
+            api('POST', f'/api/devices/{sh}/command', {'command': 'shell', 'args': {'cmd': f'content delete --uri content://au.supercluster.screens.launcher.assets/{tile["sha256"]}.png'}})
+            t7 = time.time()
+            api('POST', f'/api/sites/{sid}/launcher/push', {'device_ids': [sh]})
+            again = [e['path'] for e in sim_events('android.push', t7) if '/screens-asset-' in e['path']]
+            check('only the missing picture is pushed again', again == [f'/data/local/tmp/screens-asset-{tile["sha256"]}.png'], json.dumps(again))
+
+            # Editing the layout re-pushes automatically (new sha, no pictures needed).
+            t8 = time.time()
+            home2 = {**home, 'rows': [home['rows'][1], home['rows'][0]]}
+            api('PUT', f'/api/launcher/layouts/{lay["id"]}', {'home': home2})
+            r2 = wait(lambda: (lambda x: x if x['in_sync'] and x['expected_sha'] != r['expected_sha'] else None)(rollout(sh)), 90, 2)
+            check('layout edit pushed automatically, box in sync with the new sha', bool(r2) and not [e for e in sim_events('android.push', t8) if '/screens-asset-' in e['path']], json.dumps(rollout(sh))[:300])
+
+            # A box still on launcher 1.0.0 gets the v1 config and no pictures.
+            body_v1 = b'PK\x03\x04SCREENS_LAUNCHER_V1' + os.urandom(3000)
+            b = '----screensv1'
+            form = (f'--{b}\r\nContent-Disposition: form-data; name="package"\r\n\r\nau.supercluster.screens.launcher\r\n--{b}\r\nContent-Disposition: form-data; name="file"; filename="launcher-1.0.0.apk"\r\n\r\n').encode() + body_v1 + f'\r\n--{b}--\r\n'.encode()
+            apk1 = json.loads(opener.open(urllib.request.Request(BASE + '/api/apks', method='POST', data=form, headers={'content-type': f'multipart/form-data; boundary={b}'}), timeout=30).read())
+            sh2 = api('POST', f'/api/sites/{sid}/adopt', {'ip': '10.99.0.11', 'kind': 'android', 'name': 'Bedroom Shield'})['id']
+            wait(lambda: api('GET', f'/api/devices/{sh2}')['model'] == 'SHIELD Android TV', 40)
+            t9 = time.time()
+            r = api('POST', f'/api/devices/{sh2}/command', {'command': 'launcher_install'}, timeout=180)
+            cfg2 = [e for e in sim_events('android.launcher_config', t9) if e['ip'] == '10.99.0.11']
+            check('1.0.0 box: installed, sent config v1 (no home)', r['ok'] and r['data']['status'].get('version') == '1.0.0' and cfg2 and all(e['v'] == 1 for e in cfg2), json.dumps([r, cfg2])[:400])
+            check('1.0.0 box: no pictures pushed, no content provider calls', not [e for e in sim_events('android.push', t9) if e['ip'] == '10.99.0.11'] and not [e for e in sim_events('android.shell', t9) if e['ip'] == '10.99.0.11' and e['cmd'].startswith('content ')])
+            x = rollout(sh2)
+            check('1.0.0 box: rollout expects v1 and is in sync', x['expected_v'] == 1 and x['in_sync'] and not x['supports_v2'] and x['layout_id'] == lay['id'], json.dumps(x)[:300])
+            # Per-box override → only that box changes.
+            tpl = api('POST', f'/api/launcher/layouts/{lay["id"]}/copy', {'site_id': sid, 'name': 'Kids'})
+            api('PUT', f'/api/devices/{sh}/launcher', {'layout_id': tpl['id']})
+            x = wait(lambda: (lambda y: y if y['in_sync'] and y['layout_id'] == tpl['id'] else None)(rollout(sh)), 90, 2)
+            check('per-box override pushed to that box', bool(x), json.dumps(rollout(sh))[:300])
+            api('DELETE', f'/api/devices/{sh2}')
+            api('DELETE', f'/api/apks/{apk1["id"]}')
+        except Exception as e:
+            check('section screens launcher v2 completed', False, str(e)[:300])
         print('== samsung control')
         try:
             t4 = time.time()
@@ -570,7 +667,7 @@ def main():
         try:
             ov = api('GET', '/api/overview')
             check('overview counts', ov['counts']['devices_total'] >= 4 and ov['counts']['gateways_online'] >= 1)
-            au = api('GET', '/api/audit?limit=50')
+            au = api('GET', '/api/audit?limit=300')  # the launcher v2 section adds ~20 audited actions
             check('audit log records actions', any(x['action'] == 'device.install' for x in au) and any(x['action'] == 'site.guest_reset' for x in au))
 
         except Exception as e:

@@ -5,7 +5,10 @@ Device simulators for end-to-end testing of Screens without real hardware.
   Samsung TV  : HTTP :8001 /api/v2/, WSS :8002 remote channel, UPnP :9197
   Sonos       : HTTP :1400 device description, album art, SOAP (AVTransport incl. queue/play mode, RenderingControl,
                 GroupRenderingControl, ZoneGroupTopology, ContentDirectory, DeviceProperties, AlarmClock)
-  Android/ADB : TCP :5555 minimal adbd (CNXN without auth, shell:, exec:, streaming install)
+  Android/ADB : TCP :5555 minimal adbd (CNXN without auth, shell:, exec:, streaming install, sync push)
+                Screens Launcher: v2 by default (STATUS v2 fields, asset ContentProvider via `content write/query`,
+                config v1 + v2); an APK containing the bytes SCREENS_LAUNCHER_V1 installs as the 1.0.0 app
+                (STATUS v1, rejects "v": 2, no asset provider). docs/LAUNCHER-V2.md
 
 Usage:  sudo python3 sim.py --samsung 10.99.0.20 --sonos 10.99.0.30,10.99.0.31 --android 10.99.0.10,10.99.0.11
 The IPs must exist on this host (e.g. `ip addr add 10.99.0.20/32 dev lo`).
@@ -367,7 +370,29 @@ class FakeAndroid:
         self.home = 'com.google.android.tvlauncher'
         self.appops = {}
         self.files_sha = {}
+        self.files_size = {}
         self.scrcpy = None
+        self.launcher_assets = {}   # sha → bytes held by the launcher's asset provider (v2 only)
+        self.launcher_cfg_json = None
+
+    LAUNCHER = 'au.supercluster.screens.launcher'
+    ASSETS = 'content://au.supercluster.screens.launcher.assets/'
+
+    def launcher_version(self):
+        p = self.packages.get(self.LAUNCHER)
+        return p[2] if p else None
+
+    def launcher_v2(self):
+        v = self.launcher_version()
+        return bool(v) and int(v.split('.')[0]) >= 2
+
+    def launcher_missing(self):
+        cfg = self.launcher_cfg_json or {}
+        home = cfg.get('home') or {}
+        refs = []
+        if home.get('wallpaper'): refs.append(home['wallpaper'].get('asset'))
+        refs += [t.get('asset') for t in (home.get('tiles') or {}).values() if t.get('asset')]
+        return [r for r in dict.fromkeys(refs) if r and r not in self.launcher_assets]
 
     def shell(self, cmd):
         """Very small emulation of the commands the Screens Android driver sends."""
@@ -385,18 +410,53 @@ class FakeAndroid:
             out.append('@@CAM')
             out.append('@@VER'); out += [f'{p} {self.packages[p][2]}' for p in third]
             out.append('@@END')
+        elif cmd.startswith('content write --uri ' + self.ASSETS) or cmd.startswith('content query --uri ' + self.ASSETS) or cmd.startswith('content delete --uri ' + self.ASSETS):
+            # The launcher's asset ContentProvider (2.x only; DUMP-protected, so only the adb shell gets here).
+            if not self.launcher_v2():
+                out.append(f'Error while accessing provider:{self.ASSETS[10:-1]}')
+                out.append(f'java.lang.IllegalArgumentException: Unknown authority {self.ASSETS[10:-1]}')
+                if 'echo "@@rc=$?"' in cmd: out.append('@@rc=1')
+            elif cmd.startswith('content query'):
+                rows = [f'Row: {i} sha256={sha}, bytes={n}' for i, (sha, n) in enumerate(self.launcher_assets.items())]
+                out += rows or ['No result found.']
+            elif cmd.startswith('content delete'):
+                m = re.match(r'content delete --uri \S+/([0-9a-f]{64})\.(jpg|png|webp)', cmd)
+                if m: self.launcher_assets.pop(m.group(1), None)
+            else:
+                m = re.match(r'content write --uri \S+/([0-9a-f]{64})\.(jpg|png|webp) < (\S+)(?: 2>&1)?(.*)$', cmd)
+                rc = 1
+                if not m:
+                    out.append('java.lang.IllegalArgumentException: bad asset name')
+                elif self.files_sha.get(m.group(3)) != m.group(1):
+                    out.append(f'java.lang.SecurityException: sha256 mismatch for {m.group(1)}')
+                else:
+                    self.launcher_assets[m.group(1)] = self.files_size.get(m.group(3), 0); rc = 0
+                log('android.content_write', ip=self.ip, sha=m.group(1) if m else None, ok=rc == 0)
+                rest = m.group(4) if m else ''
+                if '@@rc=$?' in rest: out.append(f'@@rc={rc}')
+                rm = re.search(r'rm -f (\S+)', rest)
+                if rm: self.files_sha.pop(rm.group(1), None)
         elif 'au.supercluster.screens.launcher.CONFIG' in cmd:
             m = re.search(r'--es config_b64 (\S+)', cmd)
             try:
-                cfg = base64.b64decode(m.group(1)); json.loads(cfg)
-                self.launcher_cfg = hashlib.sha256(cfg).hexdigest()
+                raw = base64.b64decode(m.group(1)); cfg = json.loads(raw)
+                v = cfg.get('v')
+                if len(raw) > 48 * 1024: raise ValueError(f'config too large (max {48 * 1024} bytes)')
+                if v != 1 and not (self.launcher_v2() and v == 2): raise ValueError(f'v: unsupported config version {v}')
+                self.launcher_cfg = hashlib.sha256(raw).hexdigest()
+                self.launcher_cfg_json = cfg
+                log('android.launcher_config', ip=self.ip, v=v, sha=self.launcher_cfg, rows=len((cfg.get('home') or {}).get('rows') or []))
                 out.append(f'Broadcasting: Intent {{ act=au.supercluster.screens.launcher.CONFIG }}')
                 out.append(f'Broadcast completed: result=1, data="ok:{self.launcher_cfg}"')
             except Exception as e:
                 out.append(f'Broadcast completed: result=0, data="error:{e}"')
         elif 'au.supercluster.screens.launcher.STATUS' in cmd:
-            if 'au.supercluster.screens.launcher' in self.packages:
-                st = json.dumps({'version': '1.0.0', 'config_sha': getattr(self, 'launcher_cfg', None), 'is_home': self.home == 'au.supercluster.screens.launcher'}).replace('"', '\\"')
+            if self.LAUNCHER in self.packages:
+                st = {'version': self.launcher_version(), 'config_sha': getattr(self, 'launcher_cfg', None), 'is_home': self.home == self.LAUNCHER}
+                if self.launcher_v2():
+                    st.update({'version_code': self.packages[self.LAUNCHER][1], 'config_v': (self.launcher_cfg_json or {}).get('v'),
+                               'assets': list(self.launcher_assets), 'missing_assets': self.launcher_missing(), 'last_error': None})
+                st = json.dumps(st).replace('"', '\\"')
                 out.append(f'Broadcast completed: result=1, data="status:{st}"')
             else:
                 out.append('Broadcast completed: result=0')
@@ -567,6 +627,7 @@ def adbd(ip, dev):
                                 s['data'] += body
                             elif tag == b'DONE':
                                 dev.files_sha[s['file']] = hashlib.sha256(bytes(s['data'])).hexdigest()
+                                dev.files_size[s['file']] = len(s['data'])
                                 log('android.push', ip=ip, path=s['file'], size=len(s['data']))
                                 send(conn, A_WRTE, a1, a0, b'OKAY' + struct.pack('<I', 0))
                             elif tag == b'QUIT':
@@ -576,9 +637,13 @@ def adbd(ip, dev):
                         continue
                     if s and s['kind'] == 'install':
                         s['got'] += len(data)
+                        if len(s.setdefault('head', b'')) < 65536: s['head'] += data[:65536]
                         if s['got'] >= s['need']:
-                            log('android.install_done', ip=ip, size=s['got'])
-                            dev.packages.setdefault('au.supercluster.screens.launcher', ('/data/app/~~l==/au.supercluster.screens.launcher-1==/base.apk', 1, '1.0.0'))
+                            # Any install also "installs" the Screens Launcher: 2.0.0, or 1.0.0 when the APK carries the v1 marker.
+                            v1 = b'SCREENS_LAUNCHER_V1' in s['head']
+                            log('android.install_done', ip=ip, size=s['got'], launcher='1.0.0' if v1 else '2.0.0')
+                            dev.packages['au.supercluster.screens.launcher'] = ('/data/app/~~l==/au.supercluster.screens.launcher-1==/base.apk', 10000 if v1 else 20000, '1.0.0' if v1 else '2.0.0')
+                            if v1: dev.launcher_assets.clear()
                             s['kind'] = 'out'; s['out'] = [b'Success\n']
                             pump(conn, a1, streams)
                 elif cmd == A_CLSE:

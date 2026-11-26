@@ -1187,8 +1187,9 @@ export class SiteHub extends DurableObject<Env> {
           power = ps === 'standby' ? 'standby' : 'on';
           status = power === 'standby' ? 'standby' : 'online';
         }
+        const wasOffline = d.status === 'offline'; // updateDevice() mutates d.status
         if (status !== d.status || power !== d.power || now() - (d.last_seen ?? 0) > 5 * 60_000) await this.updateDevice(d, { status, power, last_seen: now() });
-        if (d.status === 'offline') {
+        if (wasOffline) {
           await resolveAlert(this.env, `dev_offline:${d.id}`);
           this.ctx.waitUntil(this.fireEvent('device.online', { device_id: d.id }));
           if (d.kind === 'android') this.ctx.waitUntil(this.launcherReconcile([d.id]).catch(() => undefined));
@@ -1439,6 +1440,11 @@ function fillSeries(points: { t: number; queries: number; blocked: number; would
 
 function redactArgs(command: string, args: Record<string, unknown>) {
   if (command === 'text') return { text: '[redacted]' };
+  if (command.startsWith('launcher_') && ('config_b64' in args || 'config_v2_b64' in args)) {
+    // Configs carry the Wi-Fi password and can be ~64 KB: keep only their SHAs and the image count.
+    const { config_b64: _1, config_v2_b64: _2, assets, apk, ...rest } = args as Record<string, any>;
+    return { ...rest, ...(Array.isArray(assets) ? { assets: assets.length } : {}), ...(apk ? { apk: apk.version_name ?? apk.sha256 } : {}) };
+  }
   return args;
 }
 
