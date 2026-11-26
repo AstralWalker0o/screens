@@ -18,9 +18,11 @@ if ! ns_ok "$NS" lan0; then
   ip addr add 10.99.0.1/24 dev lan0; ip link set lan0 up multicast on
   ip netns exec "$NS" ip link set lo up
   ip netns exec "$NS" ip link set simeth0 up
-  for i in 10 11 20 30 31; do ip netns exec "$NS" ip addr add 10.99.0.$i/24 dev simeth0; done
   ip netns exec "$NS" ip route add default via 10.99.0.1
 fi
+
+# Simulated device addresses (idempotent, so new simulators get their IPs on existing namespaces too).
+for i in 10 11 20 21 22 30 31; do ip netns exec "$NS" ip addr add 10.99.0.$i/24 dev simeth0 2>/dev/null || true; done
 
 # Second namespace = the "main VLAN" with phones, for real-multicast mDNS reflector tests.
 if ! ns_ok simmain lan1; then
@@ -37,7 +39,7 @@ fi
 
 pkill -f tools/sim/sim.py 2>/dev/null || true
 : > "$ROOT/tools/sim/sim.log"
-ip netns exec "$NS" python3 "$ROOT/tools/sim/sim.py" --samsung 10.99.0.20 --sonos 10.99.0.30,10.99.0.31 --android 10.99.0.10,10.99.0.11 &
+ip netns exec "$NS" python3 "$ROOT/tools/sim/sim.py" --samsung 10.99.0.20 --samsung9 10.99.0.21 --samsung-deny 10.99.0.22 --sonos 10.99.0.30,10.99.0.31 --android 10.99.0.10,10.99.0.11 &
 SIM=$!
 
 cd "$ROOT/central"

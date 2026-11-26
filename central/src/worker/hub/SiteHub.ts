@@ -6,6 +6,7 @@ import type {
 import { adapterFor, DISCOVERY_MDNS, DISCOVERY_PORTS, fingerprint, parseSonosDescription, probeTarget, type RawHost } from '../adapters';
 import type { AdapterCtx } from '../adapters/types';
 import { AdapterError, xmlTag } from '../adapters/types';
+import { htmlUnescape } from '../adapters/samsung';
 import { classify, compilePolicies, refreshLists } from '../dns/compile';
 import { buildDnsConfig } from '../dns/config';
 import { certNotAfter, issueCertificate, upsertRecord, zoneId } from '../acme/acme';
@@ -539,7 +540,7 @@ export class SiteHub extends DurableObject<Env> {
         if (fp.probe === 'samsung') {
           const r = await this.gw('http.request', { url: `http://${h.ip}:8001/api/v2/`, timeout_ms: 3000 }, 6000);
           const j = JSON.parse(r.body ?? '{}');
-          fp.name = j.device?.name ?? j.name ?? fp.name; fp.model = j.device?.modelName ?? fp.model;
+          fp.name = htmlUnescape(j.device?.name ?? j.name ?? null) ?? fp.name; fp.model = j.device?.modelName ?? fp.model;
           h.mac ??= j.device?.wifiMac;
         } else if (fp.probe === 'sonos') {
           const r = await this.gw('http.request', { url: `http://${h.ip}:1400/xml/device_description.xml`, timeout_ms: 3000 }, 6000);

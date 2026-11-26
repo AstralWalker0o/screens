@@ -127,7 +127,7 @@ describe('privacy score', () => {
     const bad = scoreDevice({ kind: 'samsung', dns_mode: 'monitor', online: true, summary: { ...empty, by_category: { acr: 40 }, would_block: 300 }, last_query_at: t - 3 * 3_600_000, checklist_done: {}, mic: [], private_dns: false, acr_unblocked: 40 }, t);
     expect(bad.bypass_suspected).toBe(true);
     expect(bad.grade).toBe('F');
-    const good = scoreDevice({ kind: 'samsung', dns_mode: 'enforce', online: true, summary: { ...empty, by_category: { acr: 40 }, blocked: 300 }, last_query_at: t - 60_000, checklist_done: { viewing_info: true, interest_ads: true, voice: true, autorun: true, account: true, power_on_mobile: true, ip_remote: true }, mic: [], private_dns: false, acr_unblocked: 0 }, t);
+    const good = scoreDevice({ kind: 'samsung', dns_mode: 'enforce', online: true, summary: { ...empty, by_category: { acr: 40 }, blocked: 300 }, last_query_at: t - 60_000, checklist_done: { viewing_info: true, interest_ads: true, voice: true, autorun: true, account: true, power_on_mobile: true, access_notification: true }, mic: [], private_dns: false, acr_unblocked: 0 }, t);
     expect(good.score).toBe(100);
     expect(good.checklist.find((c) => c.key === 'dns_routed')?.done).toBe(true);
   });

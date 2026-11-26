@@ -41,6 +41,20 @@ async function deviceInfo(ctx: AdapterCtx): Promise<any | null> {
 /** Per-isolate cache of open remote-control sessions, keyed by device id. */
 const sessions = new Map<string, { stream: HubStream; at: number }>();
 
+const MENU = 'Settings → All Settings → Connection → External Device Manager → Device Connection Manager (older TVs: Settings → General → External Device Manager → Device Connection Manager)';
+export const SAMSUNG_HELP = {
+  refused: `The TV refused the connection without asking. On the TV open ${MENU}: set "Access Notification" to "First Time Only" (or "Always On"), and in "Device List" delete or allow "Screens" if it's there. Then press Pair and choose Allow on the TV.`,
+  timeout: 'The TV asked "Allow Screens to connect?" but nobody answered in time. Press Pair again and choose Allow with the TV remote within about 30 seconds.',
+  waiting: 'Waiting for approval: choose Allow on the TV when it asks to let "Screens" connect, then press Pair again.',
+  silent: `The TV did not respond to the pairing request. Check ${MENU} → "Access Notification" is "First Time Only" or "Always On", make sure the TV is fully on (not in standby), then press Pair again.`,
+};
+
+/**
+ * Open the remote-control channel. Handles both behaviours seen in the wild:
+ *  - classic Tizen: the TV sends ms.channel.connect (or unauthorized/timeOut) right after the handshake;
+ *  - Tizen 9 (2024+): the TV stays silent until the client sends a register frame, answers ms.error "No Authorized"
+ *    while the Allow prompt is shown, then sends ms.channel.connect with the token once accepted.
+ */
 async function remote(ctx: AdapterCtx, waitForApprovalMs = 8000): Promise<HubStream> {
   const cached = sessions.get(ctx.device.id);
   if (cached && !cached.stream.closed && Date.now() - cached.at < 120_000) { cached.at = Date.now(); return cached.stream; }
@@ -52,17 +66,43 @@ async function remote(ctx: AdapterCtx, waitForApprovalMs = 8000): Promise<HubStr
     ? `wss://${ctx.device.ip}:8002/api/v2/channels/samsung.remote.control?name=${encodeURIComponent(CLIENT_NAME)}${secrets.token ? `&token=${secrets.token}` : ''}`
     : `ws://${ctx.device.ip}:8001/api/v2/channels/samsung.remote.control?name=${encodeURIComponent(CLIENT_NAME)}`;
   const stream = await ctx.openWs(url, { insecure_tls: true });
-  const first = await stream.next((m) => /^ms\.channel\.(connect|unauthorized|timeOut)$/.test(eventOf(m)), waitForApprovalMs).catch(() => null);
-  if (!first) { stream.close(); throw new AdapterError('pairing', 'Waiting for approval: accept the "Screens" connection request on the TV with its remote, then try again.'); }
-  const msg = JSON.parse(first);
-  if (msg.event !== 'ms.channel.connect') {
+  const deadline = Date.now() + waitForApprovalMs;
+  let registered = false, promptShown = false;
+  const fail = async (event: string, code: string, message: string): Promise<never> => {
     stream.close();
-    throw new AdapterError('unauthorized', 'The TV refused the connection. On the TV: Settings → General → External Device Manager → Device Connection Manager → allow "Screens".');
+    await ctx.update({ facts: { pairing_event: event, pairing_detail: message, pairing_at: Date.now() } });
+    throw new AdapterError(code, message);
+  };
+  for (;;) {
+    const left = deadline - Date.now();
+    if (left <= 0) return fail(promptShown ? 'waiting' : 'silent', 'pairing', promptShown ? SAMSUNG_HELP.waiting : SAMSUNG_HELP.silent);
+    // Give classic firmware ~2.5 s to speak first; then send the Tizen 9 register frame once.
+    const raw = await stream.next(() => true, registered ? left : Math.min(left, 2500)).catch((e: any) => (e?.code === 'closed' ? 'CLOSED' : null));
+    if (raw === 'CLOSED') return fail('closed', 'unauthorized', SAMSUNG_HELP.refused);
+    if (raw === null) {
+      if (!registered) {
+        registered = true;
+        stream.send(JSON.stringify({ method: 'ms.channel.connect', params: { deviceName: 'Screens', id: ctx.device.id, type: 'native', token: secrets.token ?? '' } }));
+      }
+      continue;
+    }
+    const msg = parseJson<any>(raw, {});
+    const ev = String(msg.event ?? '');
+    if (ev === 'ms.channel.connect') {
+      const token = msg.data?.token;
+      if (token && token !== secrets.token) await ctx.setSecrets({ ...secrets, token: String(token) });
+      if (facts.pairing_event) await ctx.update({ facts: { pairing_event: 'connected', pairing_detail: null, pairing_at: Date.now() } });
+      sessions.set(ctx.device.id, { stream, at: Date.now() });
+      return stream;
+    }
+    if (ev === 'ms.channel.unauthorized') return fail('unauthorized', 'unauthorized', SAMSUNG_HELP.refused);
+    if (ev === 'ms.channel.timeOut') return fail('timeOut', 'pairing', SAMSUNG_HELP.timeout);
+    if (ev === 'ms.error') {
+      if (/no authori[sz]ed/i.test(String(msg.data?.message ?? ''))) { promptShown = true; continue; } // Tizen 9: prompt is on screen
+      return fail('error', 'failed', `The TV reported an error: ${String(msg.data?.message ?? 'unknown')}`);
+    }
+    // other events (ms.channel.clientConnect, ready, …) are informational
   }
-  const token = msg.data?.token;
-  if (token && token !== secrets.token) await ctx.setSecrets({ ...secrets, token: String(token) });
-  sessions.set(ctx.device.id, { stream, at: Date.now() });
-  return stream;
 }
 
 async function sendKey(ctx: AdapterCtx, key: string) {
@@ -93,7 +133,7 @@ export const samsung: Adapter = {
       firmware: d.firmwareVersion ?? d.version ?? null,
       facts: {
         token_auth: String(d.TokenAuthSupport ?? 'true') === 'true', frame_tv: String(d.FrameTVSupport) === 'true',
-        resolution: d.resolution ?? null, network_type: d.networkType ?? null, tv_name: d.name ?? info.name ?? null,
+        resolution: d.resolution ?? null, network_type: d.networkType ?? null, tv_name: htmlUnescape(d.name ?? info.name ?? null),
         model_code: d.model ?? null, voice_support: d.VoiceSupport ?? null, developer_mode: d.developerMode ?? null,
         wifi_mac: d.wifiMac ?? null, // the TV reports its Wi-Fi MAC even when wired; WoL uses the ARP-learned MAC
       },
@@ -102,7 +142,7 @@ export const samsung: Adapter = {
 
   async pair(ctx) {
     try {
-      await remote(ctx, 30_000);
+      await remote(ctx, 45_000);
       return { ok: true, detail: 'Paired. The TV accepted the Screens remote.' };
     } catch (e: any) {
       return { ok: false, detail: e.message };
@@ -182,3 +222,9 @@ export const samsung: Adapter = {
     }
   },
 };
+
+/** Samsung's REST API HTML-escapes names ("75&quot; QLED"). */
+export function htmlUnescape(s: string | null): string | null {
+  if (s == null) return s;
+  return s.replace(/&quot;/g, '"').replace(/&#39;|&apos;/g, "'").replace(/&lt;/g, '<').replace(/&gt;/g, '>').replace(/&amp;/g, '&');
+}

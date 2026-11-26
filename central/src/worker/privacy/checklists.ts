@@ -14,8 +14,8 @@ export const CHECKLISTS: Record<DeviceKind, Item[]> = {
     { key: 'voice', label: 'Voice recognition / Bixby wake-up off', how: 'Settings → General & Privacy → Voice → Voice Wake-up → off, and Terms & Privacy → Voice Recognition Services → disagree.' },
     { key: 'autorun', label: 'Autorun Smart Hub & last app off', how: 'Settings → General & Privacy → Start Screen Option (or Smart Features) → Autorun Smart Hub → off; Autorun Last App → off.' },
     { key: 'account', label: 'Signed out of Samsung account (if not needed)', how: 'Settings → General & Privacy → System Manager → Samsung Account → Sign out.' },
-    { key: 'ip_remote', label: '"IP Remote" enabled (needed for remote control on 2022+ models)', how: 'Settings → All Settings → Connection (or General) → Network → Expert Settings → IP Remote → On.' },
-    { key: 'power_on_mobile', label: '"Power On with Mobile" enabled (lets Screens turn the TV on)', how: 'Settings → All Settings → Connection (or General) → Network → Expert Settings → Power On with Mobile → On.' },
+    { key: 'power_on_mobile', label: '"Power On with Mobile" enabled (lets Screens turn the TV on)', how: 'Settings → All Settings → Connection → Network → Expert Settings → Power On with Mobile → On (older TVs: Settings → General → Network → Expert Settings).' },
+    { key: 'access_notification', label: 'Access Notification allows Screens to connect', how: 'Settings → All Settings → Connection → External Device Manager → Device Connection Manager → Access Notification → "First Time Only"; in Device List, make sure "Screens" is allowed.' },
   ],
   lg: [
     { key: 'dns_routed', label: 'TV uses the Screens DNS filter', auto: true, how: 'Settings → All Settings → General → Network → Wired/Wi-Fi → Edit → uncheck "Set Automatically" → DNS Server → the gateway IP.' },

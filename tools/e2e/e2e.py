@@ -299,6 +299,20 @@ def main():
 
         except Exception as e:
             check('section samsung control completed', False, str(e)[:300])
+        print('== samsung pairing variants')
+        try:
+            t_p = time.time()
+            d9 = api('POST', f'/api/sites/{sid}/adopt', {'ip': '10.99.0.21', 'kind': 'samsung', 'name': 'Bedroom QLED (Tizen 9)'})
+            ok = wait(lambda: any(e for e in sim_events('samsung.register', t_p)), 20, 0.5)
+            check('samsung tizen9: register frame sent when the TV stays silent', ok)
+            r = wait(lambda: (lambda x: x if x['ok'] else None)(api('POST', f'/api/devices/{d9["id"]}/command', {'command': 'key', 'args': {'key': 'HOME'}})), 30, 2)
+            check('samsung tizen9: token issued after Allow; remote works', bool(r), json.dumps(r)[:200] if r else 'no success')
+            dd = api('POST', f'/api/sites/{sid}/adopt', {'ip': '10.99.0.22', 'kind': 'samsung', 'name': 'Office TV (notifications off)'})
+            dev = wait(lambda: (lambda x: x if x['facts'].get('pairing_event') else None)(api('GET', f'/api/devices/{dd["id"]}')), 30, 1)
+            check('samsung refused: exact reason recorded with the right menu path', bool(dev) and dev['facts']['pairing_event'] == 'unauthorized' and 'Connection → External Device Manager' in dev['facts'].get('pairing_detail', ''), json.dumps((dev or {}).get('facts', {}))[:300])
+        except Exception as e:
+            check('section samsung pairing variants completed', False, str(e)[:300])
+
         print('== sonos control')
         try:
             t5 = time.time()

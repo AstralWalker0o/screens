@@ -79,7 +79,8 @@ SAMSUNG_APPS = [
     {'appId': '3201910019365', 'app_type': 2, 'icon': '/opt/usr/apps/prime.png', 'is_lock': 0, 'name': 'Prime Video'},
 ]
 
-def samsung(ip, certfile, keyfile):
+def samsung(ip, certfile, keyfile, mode='classic'):
+    """mode: classic (connect right away) | tizen9 (silent until a register frame) | deny (Access Notification off)."""
     state = {'power': 'on'}
     class H(http.server.BaseHTTPRequestHandler):
         def log_message(self, *a): pass
@@ -104,12 +105,23 @@ def samsung(ip, certfile, keyfile):
             line, headers = read_http_head(conn)
             path = line.split(' ')[1]
             ws_handshake(conn, headers)
-            log('samsung.ws_connect', ip=ip, path=path)
-            ws_send(conn, json.dumps({'event': 'ms.channel.connect', 'data': {'id': 'abc', 'token': '12345678', 'clients': []}}))
+            log('samsung.ws_connect', ip=ip, path=path, mode=mode)
+            has_token = 'token=12345678' in path
+            if mode == 'deny':
+                ws_send(conn, json.dumps({'event': 'ms.channel.unauthorized'})); conn.close(); return
+            if mode == 'classic' or has_token:
+                ws_send(conn, json.dumps({'event': 'ms.channel.connect', 'data': {'id': 'abc', 'token': '12345678', 'clients': []}}))
             while True:
                 m = ws_recv(conn)
                 if m is None: continue
                 msg = json.loads(m)
+                if msg.get('method') == 'ms.channel.connect' and mode == 'tizen9' and not has_token:
+                    log('samsung.register', ip=ip, params=msg.get('params'))
+                    ws_send(conn, json.dumps({'event': 'ms.error', 'data': {'message': 'No Authorized'}}))
+                    time.sleep(1.5)  # the owner presses Allow
+                    ws_send(conn, json.dumps({'event': 'ms.channel.connect', 'data': {'id': 'abc', 'token': '12345678', 'clients': []}}))
+                    has_token = True
+                    continue
                 if msg.get('method') == 'ms.remote.control':
                     p = msg['params']; log('samsung.key', ip=ip, key=p.get('DataOfCmd'), type=p.get('TypeOfRemote'))
                     if p.get('DataOfCmd') == 'KEY_POWER': state['power'] = 'standby' if state['power'] == 'on' else 'on'
@@ -460,11 +472,14 @@ def adbd(ip, dev):
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument('--samsung', default=''); ap.add_argument('--sonos', default=''); ap.add_argument('--android', default='')
+    ap.add_argument('--samsung9', default='', help='Tizen 9 behaviour (register frame)'); ap.add_argument('--samsung-deny', default='', help='Access Notification off')
     a = ap.parse_args()
     tmp = tempfile.mkdtemp()
     cert, key = os.path.join(tmp, 'c.pem'), os.path.join(tmp, 'k.pem')
     subprocess.run(['openssl', 'req', '-x509', '-newkey', 'rsa:2048', '-nodes', '-keyout', key, '-out', cert, '-subj', '/CN=SmartViewSDK', '-days', '30'], check=True, capture_output=True)
     for ip in filter(None, a.samsung.split(',')): samsung(ip, cert, key)
+    for ip in filter(None, a.samsung9.split(',')): samsung(ip, cert, key, 'tizen9')
+    for ip in filter(None, a.samsung_deny.split(',')): samsung(ip, cert, key, 'deny')
     if a.sonos: sonos([x for x in a.sonos.split(',') if x])
     for i, ip in enumerate(filter(None, a.android.split(','))): adbd(ip, FakeAndroid(ip, i + 1))
     print('simulators running', flush=True)

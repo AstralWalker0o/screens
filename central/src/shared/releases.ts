@@ -17,6 +17,20 @@ export interface Release {
 
 export const RELEASES: Release[] = [
   {
+    version: '0.3.2',
+    date: '2026-11-26',
+    title: 'Samsung 2024–2025 (Tizen 9) pairing',
+    summary: 'Pairing works with newer Samsung TVs, and the instructions point to the right menus.',
+    components: { gateway: '0.2.0', launcher: '1.0.0' },
+    notes: [
+      { kind: 'fixed', text: 'Pairing with 2024–2025 Samsung TVs (Tizen 9), which wait for the app to introduce itself before showing the "Allow" prompt.' },
+      { kind: 'fixed', text: 'Samsung instructions now use the current menus: Settings → All Settings → Connection → External Device Manager → Device Connection Manager.' },
+      { kind: 'improved', text: 'When a Samsung refuses or the prompt times out, Screens records exactly which happened and shows the matching fix.' },
+      { kind: 'fixed', text: 'Samsung TV names with quotes (e.g. 75" QLED) no longer show HTML codes.' },
+      { kind: 'fixed', text: 'Removed the incorrect "IP Remote" step; it isn\'t needed for Screens.' },
+    ],
+  },
+  {
     version: '0.3.1',
     date: '2026-11-26',
     title: 'Discovery fixes from the first real site',
