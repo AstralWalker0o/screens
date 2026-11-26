@@ -24,20 +24,23 @@ import java.io.IOException
 class ConfigReceiver : BroadcastReceiver() {
 
     override fun onReceive(context: Context, intent: Intent) {
-        val (code, data) = try {
-            when (intent.action) {
-                ACTION_CONFIG -> applyConfig(context, intent)
-                ACTION_STATUS -> RESULT_OK to status(context).toResultData()
-                else -> RESULT_ERROR to "error:unknown action"
-            }
-        } catch (e: Exception) {
-            Log.w(TAG, "broadcast failed", e)
-            RESULT_ERROR to "error:internal ${e.javaClass.simpleName}"
-        }
+        val (code, data) = handle(context, intent)
         if (isOrderedBroadcast) {
             resultCode = code
             resultData = data
         }
+    }
+
+    /** The broadcast's result: (result code, result data). Never throws. */
+    internal fun handle(context: Context, intent: Intent): Pair<Int, String> = try {
+        when (intent.action) {
+            ACTION_CONFIG -> applyConfig(context, intent)
+            ACTION_STATUS -> RESULT_OK to status(context).toResultData()
+            else -> RESULT_ERROR to "error:unknown action"
+        }
+    } catch (e: Exception) {
+        Log.w(TAG, "broadcast failed", e)
+        RESULT_ERROR to "error:internal ${e.javaClass.simpleName}"
     }
 
     private fun applyConfig(context: Context, intent: Intent): Pair<Int, String> {

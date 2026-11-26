@@ -70,6 +70,27 @@ android {
             excludes += setOf("/META-INF/{AL2.0,LGPL2.1}", "/META-INF/*.version", "DebugProbesKt.bin")
         }
     }
+
+    testOptions {
+        unitTests {
+            // Robolectric screenshot tests need the merged resources (fonts, drawables, strings).
+            isIncludeAndroidResources = true
+        }
+    }
+}
+
+// Screenshot tests (src/test/kotlin/…/ui/*ScreenshotTest.kt) write PNGs to build/outputs/snapshots.
+// `./gradlew testDebugUnitTest -PrecordSnapshots` writes them to src/test/snapshots/ instead, to be
+// committed as the reference images.
+val snapshotDir: File = if (providers.gradleProperty("recordSnapshots").isPresent) {
+    file("src/test/snapshots")
+} else {
+    layout.buildDirectory.dir("outputs/snapshots").get().asFile
+}
+tasks.withType<Test>().configureEach {
+    systemProperty("screens.snapshotDir", snapshotDir.absolutePath)
+    systemProperty("roborazzi.test.record", "true")
+    maxHeapSize = "2g"
 }
 
 kotlin {
@@ -89,4 +110,9 @@ dependencies {
     implementation(libs.zxing.core)
 
     testImplementation(libs.junit)
+    // Test-only (never packaged into the APK): render the home screen on the JVM.
+    testImplementation(libs.robolectric)
+    testImplementation(libs.androidx.compose.ui.test.junit4)
+    testImplementation(libs.roborazzi)
+    testImplementation(libs.roborazzi.compose)
 }

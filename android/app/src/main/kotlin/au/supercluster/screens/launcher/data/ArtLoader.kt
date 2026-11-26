@@ -1,5 +1,6 @@
 package au.supercluster.screens.launcher.data
 
+import android.annotation.SuppressLint
 import android.content.ComponentName
 import android.content.Context
 import android.content.pm.PackageManager
@@ -12,6 +13,7 @@ import android.graphics.drawable.Drawable
 import android.util.Log
 import android.util.LruCache
 import androidx.compose.ui.graphics.asImageBitmap
+import androidx.core.graphics.createBitmap
 import androidx.core.graphics.drawable.toBitmap
 import au.supercluster.screens.launcher.ui.Art
 import au.supercluster.screens.launcher.ui.ArtKind
@@ -94,6 +96,8 @@ class ArtLoader private constructor(context: Context) : ArtSource {
     companion object {
         private const val TAG = "ScreensArt"
 
+        // Holds only the application context, which lives as long as the process.
+        @SuppressLint("StaticFieldLeak")
         @Volatile
         private var instance: ArtLoader? = null
 
@@ -133,7 +137,7 @@ class ArtLoader private constructor(context: Context) : ArtSource {
             val cropH = (h / scale).toInt().coerceIn(1, src.height)
             val left = (src.width - cropW) / 2
             val top = (src.height - cropH) / 2
-            val out = Bitmap.createBitmap(w, h, Bitmap.Config.ARGB_8888)
+            val out = createBitmap(w, h, Bitmap.Config.ARGB_8888)
             Canvas(out).drawBitmap(
                 src,
                 Rect(left, top, left + cropW, top + cropH),

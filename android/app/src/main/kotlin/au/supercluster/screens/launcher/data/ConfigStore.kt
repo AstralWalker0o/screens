@@ -96,6 +96,12 @@ object ConfigStore {
         }
     }
 
+    /** Tests only: forget the in-memory state (each Robolectric test has a fresh app). */
+    @androidx.annotation.VisibleForTesting
+    internal fun resetForTests() {
+        synchronized(lock) { flow = null }
+    }
+
     private fun configFile(app: Context) = File(app.filesDir, CONFIG_FILE)
 
     private fun prefs(app: Context): SharedPreferences = app.getSharedPreferences(PREFS, Context.MODE_PRIVATE)

@@ -13,6 +13,13 @@ and configures over adb. It provides:
 The app has **no network permission**. Everything arrives over adb from the
 Screens gateway. It never phones home.
 
+> **Launcher v2 (app 2.0.0, versionCode 20000)** adds a full home screen with a
+> wallpaper, a top bar and rows of app cards, configured with config `"v": 2`.
+> It also adds image assets pushed with `content write` and extra STATUS
+> fields. See [LAUNCHER-V2.md](LAUNCHER-V2.md). Everything in this file still
+> applies: 2.0.0 accepts the v1 configs below unchanged and shows them with the
+> v1 grid. The STATUS reply gains fields but keeps every v1 field.
+
 ## Package and components
 
 | Component | Name | Notes |
@@ -22,6 +29,7 @@ Screens gateway. It never phones home.
 | Welcome activity | `.WelcomeActivity` | Exported (so `am start` works), no intent filters. |
 | Config receiver | `.ConfigReceiver` | Exported, **protected by `android:permission="android.permission.DUMP"`**, so only the adb shell / system can send it config. Normal apps can't hold DUMP. |
 | Boot receiver | `.BootReceiver` | `BOOT_COMPLETED` → set "welcome pending" if `welcome.show_on_boot`. |
+| Assets provider (v2) | `.AssetProvider` | Authority `au.supercluster.screens.launcher.assets`, exported, read/write permission `android.permission.DUMP`. See [LAUNCHER-V2.md](LAUNCHER-V2.md) §1.1. |
 
 ## Config delivery
 
@@ -40,8 +48,13 @@ Status query (no config change):
 
 ```sh
 am broadcast -a au.supercluster.screens.launcher.STATUS -n au.supercluster.screens.launcher/.ConfigReceiver
-# → result=1, data="status:{\"version\":\"1.0.0\",\"config_sha\":\"…\",\"is_home\":true}"
+# → result=1, data="status:{"version":"1.0.0","config_sha":"…","is_home":true}"
 ```
+
+`am` prints `data` verbatim: the JSON's quotes are **not** escaped, so read up
+to the last `"` on the line. App 2.0.0 adds `version_code`, `config_v`,
+`assets`, `missing_assets` and `last_error`; see
+[LAUNCHER-V2.md](LAUNCHER-V2.md) §1.3.
 
 Show the welcome screen now (e.g. after guest reset):
 
@@ -50,6 +63,8 @@ am start -n au.supercluster.screens.launcher/.WelcomeActivity
 ```
 
 ## Config JSON (v1)
+
+(For v2, with `home`, see [LAUNCHER-V2.md](LAUNCHER-V2.md) §2.)
 
 ```json
 {

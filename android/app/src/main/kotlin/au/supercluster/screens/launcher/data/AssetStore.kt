@@ -76,6 +76,43 @@ object AssetStore {
     @Throws(FileNotFoundException::class)
     fun openUpload(context: Context, name: AssetName): ParcelFileDescriptor {
         val app = context.applicationContext
+        reserve(app, name)
+        val pipe = try {
+            ParcelFileDescriptor.createPipe()
+        } catch (e: IOException) {
+            uploadFinished()
+            throw FileNotFoundException("could not create pipe: ${e.message}")
+        }
+        val readEnd = pipe[0]
+        val writeEnd = pipe[1]
+        try {
+            start(app, name, ParcelFileDescriptor.AutoCloseInputStream(readEnd))
+        } catch (e: FileNotFoundException) {
+            readEnd.close()
+            writeEnd.close()
+            throw e
+        }
+        // Binder hands the write end to the caller and closes our copy, so the worker sees EOF
+        // as soon as the caller closes its end.
+        return writeEnd
+    }
+
+    /**
+     * Tests only: the same upload path as [openUpload], fed from [input] instead of a pipe
+     * (Robolectric's `createPipe` is a temporary file, not a pipe, so it can't model a writer
+     * that is slower than the reader).
+     */
+    @androidx.annotation.VisibleForTesting
+    @Throws(FileNotFoundException::class)
+    internal fun uploadForTests(context: Context, name: AssetName, input: InputStream) {
+        val app = context.applicationContext
+        reserve(app, name)
+        start(app, name, input)
+    }
+
+    /** Checks there is room and a free upload slot, and takes the slot. */
+    @Throws(FileNotFoundException::class)
+    private fun reserve(app: Context, name: AssetName) {
         ensure(app)
         synchronized(lock) {
             val referenced = ConfigStore.current(app).config.referencedAssets()
@@ -88,26 +125,18 @@ object AssetStore {
             if (uploadsInFlight >= MAX_CONCURRENT_UPLOADS) throw FileNotFoundException("too many uploads in progress")
             uploadsInFlight++
         }
-        val pipe = try {
-            dir(app).mkdirs()
-            ParcelFileDescriptor.createPipe()
-        } catch (e: IOException) {
-            uploadFinished()
-            throw FileNotFoundException("could not create pipe: ${e.message}")
-        }
-        val readEnd = pipe[0]
-        val writeEnd = pipe[1]
+        dir(app).mkdirs()
+    }
+
+    /** Hands [input] to a worker; the slot taken by [reserve] is released when it finishes. */
+    @Throws(FileNotFoundException::class)
+    private fun start(app: Context, name: AssetName, input: InputStream) {
         try {
-            workers.execute { receive(app, name, readEnd) }
+            workers.execute { receive(app, name, input) }
         } catch (e: RuntimeException) {
-            readEnd.close()
-            writeEnd.close()
             uploadFinished()
             throw FileNotFoundException("could not start upload")
         }
-        // Binder sends the write end to the caller and closes our copy, so the worker sees EOF
-        // as soon as the caller closes its end.
-        return writeEnd
     }
 
     /** Waits up to [timeoutMillis] for uploads in progress to finish. True when none is left. */
@@ -164,8 +193,7 @@ object AssetStore {
         }
     }
 
-    private fun receive(app: Context, name: AssetName, readEnd: ParcelFileDescriptor) {
-        val input: InputStream = ParcelFileDescriptor.AutoCloseInputStream(readEnd)
+    private fun receive(app: Context, name: AssetName, input: InputStream) {
         // Closing the stream from another thread wakes a read blocked on a writer that never finishes.
         val timeout = watchdog.schedule({ runCatching { input.close() } }, UPLOAD_TIMEOUT_SECONDS, TimeUnit.SECONDS)
         val temp = File(dir(app), TEMP_PREFIX + UUID.randomUUID())
@@ -289,6 +317,13 @@ object AssetStore {
             }
         }
         return out
+    }
+
+    /** Tests only: forget the in-memory index (each Robolectric test has a fresh app). */
+    @androidx.annotation.VisibleForTesting
+    internal fun resetForTests() {
+        awaitIdle(5_000)
+        synchronized(lock) { flow = null }
     }
 
     private fun dir(context: Context) = File(context.applicationContext.filesDir, DIR)

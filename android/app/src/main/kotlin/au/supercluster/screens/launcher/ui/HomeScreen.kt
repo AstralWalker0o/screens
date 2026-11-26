@@ -54,7 +54,6 @@ import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.Shadow
 import androidx.compose.ui.graphics.graphicsLayer
-import androidx.compose.ui.graphics.lerp
 import androidx.compose.ui.input.key.Key
 import androidx.compose.ui.input.key.KeyEvent
 import androidx.compose.ui.input.key.KeyEventType
@@ -70,6 +69,7 @@ import androidx.compose.ui.text.TextStyle
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.text.style.TextOverflow
+import androidx.compose.ui.unit.Constraints
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.compose.ui.zIndex
@@ -103,6 +103,7 @@ private val HeaderHeight = 26.dp
 private val HeaderGap = 8.dp
 private val RowGap = 16.dp
 private const val ROW_FADE_MS = 220
+private const val MAX_WALLPAPER_PX = 1920f
 
 internal val TextShadow = Shadow(Color.Black.copy(alpha = 0.6f), Offset(0f, 2f), blurRadius = 8f)
 
@@ -151,9 +152,11 @@ fun HomeScreen(
         }
     }
     // First focus, and recovery when the focused card disappears (config change, app removed).
+    // Nothing while the app list is still loading, so the first card (not the gear) gets focus.
+    val loading = rows == null
     val signature = remember(visibleRows) { visibleRows.map { r -> r.key to r.tiles.map { it.packageName } } }
-    LaunchedEffect(signature, showPin) {
-        if (showPin) return@LaunchedEffect
+    LaunchedEffect(signature, showPin, loading) {
+        if (showPin || loading) return@LaunchedEffect
         withFrameNanos { }
         if (!focus.hasFocus) {
             if (visibleRows.isNotEmpty()) focus.focus(0, 0) else focus.focusTopBar()
@@ -585,8 +588,13 @@ private fun formatClock(millis: Long, use24h: Boolean, withDate: Boolean): Pair<
 @Composable
 private fun Wallpaper(wallpaper: LauncherConfig.Wallpaper?, stored: Boolean, accent: Color) {
     BoxWithConstraints(Modifier.fillMaxSize()) {
-        val request = if (wallpaper != null && stored && constraints.maxWidth > 0 && constraints.maxHeight > 0) {
-            ArtRequest.Image(wallpaper.asset.sha256, constraints.maxWidth, constraints.maxHeight)
+        val w = constraints.maxWidth
+        val h = constraints.maxHeight
+        val request = if (wallpaper != null && stored && w > 0 && h > 0 && w < Constraints.Infinity && h < Constraints.Infinity) {
+            // Decoded at the screen's size, but never above 1920 px on the long side (a 4K UI
+            // would otherwise hold a 33 MB bitmap); it is scaled up when drawn.
+            val k = minOf(1f, MAX_WALLPAPER_PX / maxOf(w, h).toFloat())
+            ArtRequest.Image(wallpaper.asset.sha256, (w * k).toInt(), (h * k).toInt())
         } else {
             null
         }
@@ -628,19 +636,19 @@ private fun FallbackBackground(accent: Color) {
         Modifier
             .fillMaxSize()
             .drawBehind {
-                drawRect(Brush.verticalGradient(listOf(Color(0xFF161B26), Color(0xFF07080C))))
+                drawRect(Brush.verticalGradient(listOf(Color(0xFF182030), Color(0xFF07080C))))
                 drawRect(
                     Brush.radialGradient(
-                        colors = listOf(lerp(Color.Transparent, accent, 0.30f), Color.Transparent),
-                        center = Offset(size.width * 0.12f, size.height * 0.05f),
-                        radius = size.maxDimension * 0.75f,
+                        colors = listOf(accent.copy(alpha = 0.34f), accent.copy(alpha = 0.10f), Color.Transparent),
+                        center = Offset(size.width * 0.10f, size.height * 0.0f),
+                        radius = size.maxDimension * 0.70f,
                     ),
                 )
                 drawRect(
                     Brush.radialGradient(
-                        colors = listOf(lerp(Color.Transparent, accent, 0.14f), Color.Transparent),
-                        center = Offset(size.width * 0.95f, size.height * 1.0f),
-                        radius = size.maxDimension * 0.6f,
+                        colors = listOf(accent.copy(alpha = 0.16f), Color.Transparent),
+                        center = Offset(size.width * 0.95f, size.height * 1.05f),
+                        radius = size.maxDimension * 0.55f,
                     ),
                 )
             },

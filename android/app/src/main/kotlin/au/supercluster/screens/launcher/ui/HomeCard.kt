@@ -189,7 +189,8 @@ internal fun HomeCard(
                 .focusable()
                 .pointerInput(onClick) { detectTapGestures { onClick() } },
         ) {
-            CardArt(tile, art, style, spec, accent)
+            // With labels always under the cards, a fallback card doesn't repeat the name inside.
+            CardArt(tile, art, style, spec, accent, nameInside = labelMode != LabelMode.ALWAYS)
         }
         if (labelMode != LabelMode.NEVER) {
             Spacer(Modifier.height(growthH + LabelGap))
@@ -248,7 +249,7 @@ private fun Modifier.focusDecoration(corner: Dp, progress: State<Float>): Modifi
 }
 
 @Composable
-private fun CardArt(tile: HomeTile, art: Art?, style: CardStyle, spec: CardSpec, accent: Color) {
+private fun CardArt(tile: HomeTile, art: Art?, style: CardStyle, spec: CardSpec, accent: Color, nameInside: Boolean) {
     val bitmap = art?.bitmap
     when {
         art == null -> Unit // loading: the plain dark card
@@ -259,8 +260,9 @@ private fun CardArt(tile: HomeTile, art: Art?, style: CardStyle, spec: CardSpec,
             modifier = Modifier.fillMaxSize(),
         )
         else -> {
-            // No banner: the app's icon centred on an accent-tinted card (with its name, except
-            // on square icon cards, which are too small for it).
+            // No banner: the app's icon centred on an accent-tinted card, with its name (except
+            // on square icon cards, which are too small for it). Without an icon either, the
+            // name is always shown so the card is never blank.
             val tint = remember(accent) {
                 Brush.linearGradient(listOf(lerp(CardBase, accent, 0.62f), lerp(CardBase, accent, 0.26f)))
             }
@@ -275,7 +277,7 @@ private fun CardArt(tile: HomeTile, art: Art?, style: CardStyle, spec: CardSpec,
                 if (bitmap != null) {
                     Image(bitmap = bitmap, contentDescription = tile.label, modifier = Modifier.size(iconSize(style, spec)))
                 }
-                if (style != CardStyle.ICON) {
+                if (bitmap == null || (nameInside && style != CardStyle.ICON)) {
                     if (bitmap != null) Spacer(Modifier.height(spec.height * 0.05f))
                     Text(
                         text = tile.label,

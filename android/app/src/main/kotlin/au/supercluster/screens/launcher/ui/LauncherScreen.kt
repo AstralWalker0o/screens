@@ -187,11 +187,12 @@ private fun Header(
 @Composable
 private fun Clock(modifier: Modifier = Modifier) {
     val context = LocalContext.current
+    val now = LocalNow.current
     // Formatters are rebuilt on every tick so 12/24 h, locale and time zone changes show up at once.
-    val text by produceState(initialValue = formatNow(context)) {
+    val text by produceState(initialValue = formatNow(context, now())) {
         while (true) {
-            value = formatNow(context)
-            delay(1_000L - System.currentTimeMillis() % 1_000L)
+            value = formatNow(context, now())
+            delay(1_000L - now() % 1_000L)
         }
     }
     Column(modifier, horizontalAlignment = Alignment.End) {
@@ -209,8 +210,8 @@ private fun Clock(modifier: Modifier = Modifier) {
     }
 }
 
-private fun formatNow(context: android.content.Context): Pair<String, String> {
-    val now = Date()
+private fun formatNow(context: android.content.Context, millis: Long): Pair<String, String> {
+    val now = Date(millis)
     val locale = Locale.getDefault()
     val time = DateFormat.getTimeFormat(context).format(now)
     val date = SimpleDateFormat(DateFormat.getBestDateTimePattern(locale, "EEEEdMMMM"), locale).format(now)

@@ -170,7 +170,10 @@ class LauncherActivity : ComponentActivity() {
     private fun reloadApps() {
         loadJob?.cancel()
         loadJob = lifecycleScope.launch {
-            installed = withContext(Dispatchers.IO) { repository.loadInstalled() }
+            val fresh = withContext(Dispatchers.IO) { repository.loadInstalled() }
+            // Reloads happen on every resume; only publish real changes so the home screen
+            // doesn't recompose (and rebuild its rows) for nothing.
+            if (installed?.map { it.candidate } != fresh.map { it.candidate }) installed = fresh
         }
     }
 
