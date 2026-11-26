@@ -45,7 +45,7 @@ and Sonos speakers on the gateway's subnets.
 | Device | Before adopting | When you adopt |
 |---|---|---|
 | **NVIDIA Shield / Android TV** | Settings → Device Preferences → About → click *Build* 7 times. Then Developer options → enable **Network debugging** (on newer Google TV, **Wireless debugging**). | The TV shows **"Allow network debugging?"**. Tick *Always allow from this computer* and press **Allow** with the remote. |
-| **Samsung TV** | Settings → General → External Device Manager → Device Connection Manager → *Access Notification* on. Also enable **Power On with Mobile** so Screens can switch it on. | The TV shows **"Screens wants to connect" → Allow**. |
+| **Samsung TV** | Settings → All Settings → Connection/General → Network → **Expert Settings** → turn on **IP Remote** (2022+ models) and **Power On with Mobile** (so Screens can switch it on). | The TV shows **"Screens wants to connect" → Allow**. If it never appears: External Device Manager → Device Connection Manager → Access Notification → on. |
 | **LG TV** (beta) | Settings → General → Devices → *Mobile TV On* → **Turn on via Wi-Fi**. | The TV shows a pairing prompt. Choose **Accept**. |
 | **Sonos** | Nothing. | Nothing. Sonos needs no pairing on the local network. |
 

@@ -14,7 +14,8 @@ export const CHECKLISTS: Record<DeviceKind, Item[]> = {
     { key: 'voice', label: 'Voice recognition / Bixby wake-up off', how: 'Settings → General & Privacy → Voice → Voice Wake-up → off, and Terms & Privacy → Voice Recognition Services → disagree.' },
     { key: 'autorun', label: 'Autorun Smart Hub & last app off', how: 'Settings → General & Privacy → Start Screen Option (or Smart Features) → Autorun Smart Hub → off; Autorun Last App → off.' },
     { key: 'account', label: 'Signed out of Samsung account (if not needed)', how: 'Settings → General & Privacy → System Manager → Samsung Account → Sign out.' },
-    { key: 'power_on_mobile', label: '"Power On with Mobile" enabled (lets Screens turn the TV on)', how: 'Settings → General & Privacy → External Device Manager → Device Connection Manager → Access Notification / Power On with Mobile → on.' },
+    { key: 'ip_remote', label: '"IP Remote" enabled (needed for remote control on 2022+ models)', how: 'Settings → All Settings → Connection (or General) → Network → Expert Settings → IP Remote → On.' },
+    { key: 'power_on_mobile', label: '"Power On with Mobile" enabled (lets Screens turn the TV on)', how: 'Settings → All Settings → Connection (or General) → Network → Expert Settings → Power On with Mobile → On.' },
   ],
   lg: [
     { key: 'dns_routed', label: 'TV uses the Screens DNS filter', auto: true, how: 'Settings → All Settings → General → Network → Wired/Wi-Fi → Edit → uncheck "Set Automatically" → DNS Server → the gateway IP.' },
