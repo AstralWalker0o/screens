@@ -6,7 +6,7 @@ import type {
   Alert, Apk, AppPolicy, AppSettings, AuditEntry, Automation, Client, CommandRequest, CommandResult, Device,
   DeviceApp, DevicePrivacy, Discovered, DnsDomainStat, DnsList, DnsLogEntry, DnsPolicyBuild, DnsRule, DnsSummary,
   EnrollResult, Gateway, GatewayInterface, Job, LiveEvent, MdnsConfig, MdnsStatus, Me, Overview, PrivacyOverview,
-  SiteDetail, SiteKind, SiteSummary, DeviceKind, BulkCommandRequest, BulkCommandResult, SiteSettings, GuestSettings,
+  SiteDetail, SiteKind, SiteSummary, DeviceKind, BulkCommandRequest, BulkCommandResult, SiteSettings, GuestSettings, VersionInfo,
 } from '../shared/types';
 
 export class ApiError extends Error {
@@ -118,6 +118,7 @@ export type DnsLogQuery = { device_id?: string; q?: string; action?: string; lim
 
 export const api = {
   me: () => get<Me>('/api/me'),
+  version: () => get<VersionInfo>('/api/version'),
   overview: () => get<Overview>('/api/overview'),
 
   clients: {

@@ -4,8 +4,9 @@ import { ApiError } from '../api';
 import type {
   Alert, Apk, AppPolicy, AppSettings, Automation, Client, CommandResult, Device, DeviceKind, DevicePrivacy, DnsLogEntry,
   DnsRule, Gateway, Job, LiveEvent, MdnsConfig, MdnsStatus, Overview, PrivacyOverview, SiteDetail, SiteSummary, AuditEntry,
-  DnsList, EnrollResult, Discovered,
+  DnsList, EnrollResult, Discovered, VersionInfo,
 } from '../../shared/types';
+import { APP_VERSION } from '../../shared/releases';
 import * as F from './data';
 import { D, H, M, NOW, S } from './data';
 import { allDomainStats, buildTraffic, makeEntry, resetLiveRng, seedLog, summarize, type SiteCtx } from './dns';
@@ -582,6 +583,20 @@ const findSite = (id: string) => {
 };
 
 on('GET', '/api/me', () => ({ email: 'owner@supercluster.au', name: 'Owner', dev: true }));
+on('GET', '/api/version', (): VersionInfo => {
+  const latest = db.settings.agent_latest_version ?? null;
+  const sites = db.gateways.filter((g) => g.status !== 'revoked').map((g) => ({
+    site_id: g.site_id, site_name: db.sites.find((s) => s.id === g.site_id)?.name ?? g.site_id, version: g.version ?? null, status: g.status,
+    up_to_date: !!latest && g.version === latest,
+  }));
+  const launchers = db.devices.map((d) => d.facts.launcher as { installed?: boolean; version?: string } | undefined).filter((l) => l?.installed);
+  const launcherLatest = '1.0.2';
+  return {
+    version: APP_VERSION, build_sha: 'mock123', built_at: new Date(NOW - 2 * H).toISOString(),
+    gateway: { latest, up_to_date: sites.filter((s) => s.up_to_date).length, total: sites.length, sites },
+    launcher: { latest: launcherLatest, installed: launchers.length, up_to_date: launchers.filter((l) => l?.version === launcherLatest).length },
+  };
+});
 on('GET', '/api/overview', () => overview());
 
 on('GET', '/api/clients', () => db.clients.map((c) => ({

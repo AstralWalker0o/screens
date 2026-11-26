@@ -11,6 +11,7 @@ import { dismissToast, useToasts } from '../lib/toast';
 import { cn, IconButton } from '../components/ui';
 import { GlobalSearch } from './GlobalSearch';
 import { AlertsBell } from './AlertsBell';
+import { SidebarVersion, VersionBadge, WhatsNewHost } from './WhatsNew';
 
 const NAV = [
   { to: '/', label: 'Overview', icon: LayoutDashboard, end: true },
@@ -130,6 +131,7 @@ function SidebarContent({ onNavigate }: { onNavigate?: () => void }) {
             <p className="truncate text-[11px] text-muted">{me.data?.email ?? '…'}</p>
           </div>
         </div>
+        <SidebarVersion />
       </div>
     </div>
   );
@@ -221,7 +223,8 @@ export function AppShell({ children }: { children?: ReactNode }) {
             </svg>
           </div>
           <GlobalSearch />
-          <div className="ml-auto flex items-center gap-1">
+          <div className="ml-auto flex items-center gap-1.5">
+            <VersionBadge />
             <AlertsBell />
           </div>
         </header>
@@ -230,6 +233,7 @@ export function AppShell({ children }: { children?: ReactNode }) {
           {children ?? <Outlet />}
         </main>
       </div>
+      <WhatsNewHost />
       <Toaster />
     </div>
   );
