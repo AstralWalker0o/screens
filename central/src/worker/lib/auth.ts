@@ -20,8 +20,11 @@ export async function requireAccess(req: Request, env: Env): Promise<Actor> {
   if (!jwks) { jwks = createRemoteJWKSet(new URL(`${team}/cdn-cgi/access/certs`)); jwksCache.set(team, jwks); }
   try {
     const { payload } = await jwtVerify(token, jwks, { issuer: team, audience: env.ACCESS_AUD });
-    const email = (payload.email as string) || (payload.common_name as string) || 'service-token';
-    return { email, name: (payload.name as string) || undefined };
+    // People sign in with an email; Access service tokens (automation, support access) carry only common_name
+    // (the token's Client ID) and show up in the audit log as "service-token:<client id>".
+    if (payload.email) return { email: payload.email as string, name: (payload.name as string) || undefined };
+    const cn = (payload.common_name as string) || 'unknown';
+    return { email: `service-token:${cn}`, name: 'Service token' };
   } catch {
     throw new HttpError(401, 'unauthenticated', 'Invalid Cloudflare Access token');
   }

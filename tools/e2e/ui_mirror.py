@@ -27,6 +27,8 @@ const { chromium } = require('playwright');
   p.on('pageerror', (e) => errors.push(String(e)));
   await p.addInitScript(() => { try { localStorage.setItem('theme', 'dark'); localStorage.removeItem('mock'); } catch (e) {} });
   await p.goto('http://127.0.0.1:8933/devices/DEV');
+  // The live view starts only on an explicit click.
+  await p.getByRole('button', { name: 'Start live view' }).click({ timeout: 20000 });
   await p.waitForTimeout(12000);
   const stats = await p.evaluate(() => {
     const c = document.querySelector('canvas');

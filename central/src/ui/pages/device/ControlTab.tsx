@@ -1,4 +1,4 @@
-import { Gamepad2, MonitorSmartphone, LayoutGrid, Info, MessageSquare, HdmiPort, Tv, Cable, Radio, Camera } from 'lucide-react';
+import { Gamepad2, MonitorSmartphone, LayoutGrid, Info, MessageSquare, HdmiPort, Tv, Cable, Radio, Camera, Play } from 'lucide-react';
 import { useState } from 'react';
 import type { Device } from '../../../shared/types';
 import { sendCommand } from '../../lib/commands';
@@ -53,7 +53,7 @@ export function ControlTab({ device: d }: { device: Device }) {
               }
             />
             <CardBody>
-              {live ? <MirrorPlayer device={d} onUseScreenshots={() => setMode('shot')} /> : <ScreenshotPane device={d} />}
+              {live ? <LiveView key={d.id} device={d} onUseScreenshots={() => setMode('shot')} /> : <ScreenshotPane device={d} />}
               {d.capabilities.includes('toast') && <ToastBox device={d} />}
             </CardBody>
           </Card>
@@ -152,5 +152,17 @@ function ToastBox({ device, bare }: { device: Device; bare?: boolean }) {
       <Input value={msg} onChange={(e) => setMsg(e.target.value)} placeholder="Pop up a message on the TV, e.g. “Checkout is at 11 am”" aria-label="Message to show on the TV" />
       <Button type="submit" loading={busy} disabled={!msg.trim()}>Show</Button>
     </form>
+  );
+}
+
+/** The live view only connects (and starts the mirroring service on the box) after an explicit click. */
+function LiveView({ device, onUseScreenshots }: { device: Device; onUseScreenshots: () => void }) {
+  const [started, setStarted] = useState(false);
+  if (started) return <MirrorPlayer device={device} onUseScreenshots={onUseScreenshots} />;
+  return (
+    <div className="flex aspect-video w-full flex-col items-center justify-center gap-3 rounded-lg border border-line bg-black/90 px-6 text-center">
+      <Button variant="primary" icon={Play} onClick={() => setStarted(true)}>Start live view</Button>
+      <p className="max-w-sm text-xs text-white/70">Starts a live picture from {device.name}. Nothing runs on the box until you press this, and it stops when you leave the page.</p>
+    </div>
   );
 }

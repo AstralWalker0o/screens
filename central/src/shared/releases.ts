@@ -17,6 +17,17 @@ export interface Release {
 
 export const RELEASES: Release[] = [
   {
+    version: '0.5.2',
+    date: '2026-11-26',
+    title: 'Live view on request',
+    summary: 'The live view only starts when you press Start live view.',
+    components: { gateway: '0.3.0', launcher: '1.0.0' },
+    notes: [
+      { kind: 'improved', text: 'Opening a device no longer starts the live view by itself. Press "Start live view" when you want it; nothing runs on the box until then.' },
+      { kind: 'improved', text: 'Actions taken with a Cloudflare Access service token (for support or automation) are labelled as such in the audit log.' },
+    ],
+  },
+  {
     version: '0.5.1',
     date: '2026-11-26',
     title: 'Live view that tells you what went wrong',
