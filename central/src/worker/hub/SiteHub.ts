@@ -461,13 +461,13 @@ export class SiteHub extends DurableObject<Env> {
       }
       if (row.status === 'offline' || row.status === 'unknown') this.ctx.waitUntil(this.updateDevice(row, { status: 'online', last_seen: now() }));
       if (jobId) await finishJob(this.env, jobId, result?.ok === false ? 'error' : 'ok', result);
-      if (parseJson<any>(row.facts, {}).last_error?.command === command) this.ctx.waitUntil(this.updateDevice(row, { facts: { last_error: null } }).catch(() => undefined));
+      if (parseJson<any>(row.facts, {}).last_error?.command === command) await this.updateDevice(row, { facts: { last_error: null } }).catch(() => undefined);
       if (!QUIET_COMMANDS.has(command) && !adapter.quiet?.has(command)) await audit(this.env, actor, `device.${command}`, { target_type: 'device', target_id: deviceId, site_id: this.siteId, details: { args: redactArgs(command, args), ok: result?.ok } });
       return result;
     } catch (e: any) {
       if (jobId) await finishJob(this.env, jobId, 'error', { error: e.message, code: e.code });
       // Quiet commands (media, volume…) aren't audited: keep the last failure on the device so operators can see it.
-      if (!STATUS_READS.has(command)) this.ctx.waitUntil(this.updateDevice(row, { facts: { last_error: { command, message: String(e?.message ?? e).slice(0, 500), code: e?.code ?? 'error', at: now() } } }).catch(() => undefined));
+      if (!STATUS_READS.has(command)) await this.updateDevice(row, { facts: { last_error: { command, message: String(e?.message ?? e).slice(0, 500), code: e?.code ?? 'error', at: now() } } }).catch(() => undefined);
       if (e.code === 'adb_unauthorized' || e.code === 'unauthorized') await this.updateDevice(row, { status: 'unauthorized' });
       if (e.code === 'pairing') await this.updateDevice(row, { status: 'pairing' });
       throw e;
@@ -480,8 +480,12 @@ export class SiteHub extends DurableObject<Env> {
     const rows = (await this.env.DB.prepare("SELECT * FROM devices WHERE site_id = ? AND kind = 'sonos' ORDER BY name").bind(this.siteId).all<Row>()).results;
     if (!rows.length) throw new HttpError(404, 'not_found', 'There are no Sonos speakers at this site');
     const order = (r: Row) => (r.status === 'online' ? 0 : r.status === 'offline' ? 2 : 1);
-    const anchor = [...rows].sort((a, b) => order(a) - order(b))[0];
-    return sonosSiteOverview(this.makeCtx(anchor), rows);
+    // Any speaker can describe the whole household; try the likeliest few in turn.
+    let last: unknown;
+    for (const anchor of [...rows].sort((a, b) => order(a) - order(b)).slice(0, 3)) {
+      try { return await sonosSiteOverview(this.makeCtx(anchor), rows); } catch (e) { last = e; }
+    }
+    throw last;
   }
 
   /** Album art from a speaker ("/getaa?…"), base64; the Worker route caches and serves it. */

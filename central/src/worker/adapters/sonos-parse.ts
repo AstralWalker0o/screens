@@ -155,7 +155,7 @@ export function nowPlayingFrom(trackMeta: string | null | undefined, trackUri?: 
   } else if (sc && !title) title = sc;
   const src = describeSource(trackUri ?? '');
   return {
-    title, artist, album: d.album, art: d.art, ...(station ? { station } : {}),
+    title, artist, album: d.album, art: d.art, station,
     source: src.source, service: src.service,
   };
 }

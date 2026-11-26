@@ -97,6 +97,37 @@ allow phones on the main VLAN to reach the speakers, for example TCP 1400,
 1443, 3400, 3401, 3500, 4444 and UDP 1900, 1901, 5353 to the Sonos IPs. Do
 that on your Palo Alto or UniFi.
 
+### Sonos across VLANs: the usual gotchas
+
+| Direction | Allow | Why |
+|---|---|---|
+| Phones → speakers | TCP 1400, 1443, 4444; UDP 1900, 1901, 5353 | Control (1400 = UPnP, 1443 = the current Sonos app's secure connection, also the port `_sonos._tcp` advertises), updates, discovery replies |
+| **Speakers → phones** | TCP 3400, 3401, 3500 | The speakers *call the app back* with "now playing"/volume updates (UPnP events). These are new connections from the IoT VLAN, so "allow established" rules don't cover them. Symptom when blocked: the app finds the rooms but shows nothing playing, or the volume and track never update. |
+| Speakers → phones | UDP 1900/1901 replies to the phone's port | SSDP answers come back as unicast from the speaker |
+| Phones ↔ speakers | TCP 7000 + high UDP ports both ways | AirPlay 2 (only if guests use AirPlay) |
+
+- **Keep every Sonos on one VLAN.** Rooms that group, stereo pairs, and a
+  soundbar's Sub/surrounds talk to each other directly; they don't work
+  across a router. Put them all on the IoT VLAN.
+- **Discovery:** the current Sonos app looks for `_sonos._tcp` over mDNS;
+  older apps (S1, older S2) use SSDP (`urn:schemas-upnp-org:device:ZonePlayer:1`).
+  Reflect both — keep **SSDP** switched on in the reflector.
+- **Adding a new speaker** uses a UDP broadcast on port 6969, which the
+  reflector doesn't carry. Set up new speakers from a phone joined to the
+  IoT VLAN (or temporarily on the same network), then move the phone back.
+- **IGMP snooping** on the IoT VLAN without an IGMP querier can make grouped
+  rooms drop out after a few minutes. Turn on a querier for that VLAN (or
+  turn snooping off for it).
+- **Spotify Connect** needs `_spotify-connect._tcp` reflected and phones able
+  to reach TCP 1400 on the speakers.
+- **Screens itself needs none of this:** the gateway sits on the IoT VLAN and
+  talks to the speakers directly on TCP 1400, including fetching album art.
+
+If "Play" in Screens says the last source has ended, the music was started
+by an app (YouTube Music, Spotify Connect, AirPlay) whose session is over;
+Screens then starts the Sonos queue if there is one, or asks you to pick a
+favourite. That's a Sonos rule, not a network problem.
+
 ## 7. Rentals: guest reset
 
 For rental sites, the **Guest** tab has **Guest reset**, which signs every
