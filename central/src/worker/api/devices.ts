@@ -1,5 +1,7 @@
 import { Hono } from 'hono';
 import type { DeviceApp } from '../../shared/types';
+import { artPathAllowed } from '../adapters/sonos-parse';
+import { b64Decode, sha256Hex } from '../lib/crypto';
 import { audit, type Row, toDevice } from '../lib/db';
 import { hub, hubStub, originOf } from '../lib/hub';
 import { domainValid, HttpError, isPrivateIPv4, now, parseJson } from '../lib/util';
@@ -165,4 +167,24 @@ deviceRoutes.get('/devices/:id/screenshot', async (c) => {
   const obj = await c.env.FILES.get(key);
   if (!obj) throw new HttpError(404, 'not_found', 'No screenshot yet');
   return new Response(obj.body, { headers: { 'Content-Type': 'image/jpeg', 'Cache-Control': 'private, max-age=60' } });
+});
+
+/** Sonos album art for speaker-relative URLs ("/getaa?…"), fetched through the gateway and cached for an hour. */
+deviceRoutes.get('/devices/:id/sonos/art', async (c) => {
+  const d = await deviceRow(c, c.req.param('id'));
+  if (d.kind !== 'sonos') throw new HttpError(400, 'not_supported', 'Album art is only available for Sonos speakers');
+  const path = c.req.query('path') ?? '';
+  if (!artPathAllowed(path)) throw new HttpError(400, 'bad_request', 'Not an album-art path');
+  const headers = (type: string) => ({
+    'Content-Type': type, 'X-Content-Type-Options': 'nosniff', 'Content-Security-Policy': "default-src 'none'", 'Cache-Control': 'private, max-age=3600',
+  });
+  // Any speaker in the household serves the same art, so cache per site + path.
+  const key = new Request(`${new URL(c.req.url).origin}/__cache/sonos-art/${await sha256Hex(`${d.site_id}\n${path}`)}`);
+  const cache = (globalThis as { caches?: { default?: Cache } }).caches?.default;
+  const hit = await cache?.match(key).catch(() => undefined);
+  if (hit) return new Response(hit.body, { headers: headers(hit.headers.get('content-type') ?? 'image/jpeg') });
+  const art = await hub<{ content_type: string; body_b64: string }>(c.env, d.site_id, originOf(c.req.raw, c.env), 'sonosArt', d.id, path);
+  const bytes = b64Decode(art.body_b64);
+  if (cache) c.executionCtx.waitUntil(cache.put(key, new Response(bytes, { headers: { 'Content-Type': art.content_type, 'Cache-Control': 'public, max-age=3600' } })).catch(() => undefined));
+  return new Response(bytes, { headers: headers(art.content_type) });
 });

@@ -296,6 +296,9 @@ siteRoutes.get('/sites/:id/apps', async (c) => {
   return c.json(rows.results.map((r) => ({ package: r.package, label: r.label, system: !!r.system, category: r.category, risk: r.risk, devices: r.devices, kinds: String(r.kinds ?? '').split(',') })));
 });
 
+/** Live view of every Sonos room and group at the site (docs/API.md). */
+siteRoutes.get('/sites/:id/sonos', async (c) => c.json(await hub(c.env, c.req.param('id'), originOf(c.req.raw, c.env), 'sonosOverview')));
+
 // ---------------------------------------------------------------- mDNS reflector
 siteRoutes.get('/sites/:id/mdns', async (c) => {
   const id = c.req.param('id');

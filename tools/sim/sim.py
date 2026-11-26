@@ -3,7 +3,8 @@
 Device simulators for end-to-end testing of Screens without real hardware.
 
   Samsung TV  : HTTP :8001 /api/v2/, WSS :8002 remote channel, UPnP :9197
-  Sonos       : HTTP :1400 device description + SOAP (AVTransport, RenderingControl, ZoneGroupTopology)
+  Sonos       : HTTP :1400 device description, album art, SOAP (AVTransport incl. queue/play mode, RenderingControl,
+                GroupRenderingControl, ZoneGroupTopology, ContentDirectory, DeviceProperties, AlarmClock)
   Android/ADB : TCP :5555 minimal adbd (CNXN without auth, shell:, exec:, streaming install)
 
 Usage:  sudo python3 sim.py --samsung 10.99.0.20 --sonos 10.99.0.30,10.99.0.31 --android 10.99.0.10,10.99.0.11
@@ -138,9 +139,28 @@ def samsung(ip, certfile, keyfile, mode='classic'):
 
 # --------------------------------------------------------------------------- Sonos
 def sonos(ips):
+    """Sonos speakers. The first plays its queue; the second is STOPPED on an app session that has ended
+    (x-sonos-vli…dead-session): Play answers UPnP 701 until the Sonos queue (or anything else) is selected —
+    the "Play doesn't work" case seen in the field. The third (if any) is a Sonos Arc for home-theatre EQ."""
+    from xml.sax.saxutils import escape as xesc
+    from html import unescape as xun
     uuids = {ip: f'RINCON_SIM{ip.split(".")[-1]:0>3}01400' for ip in ips}
     names = {ip: n for ip, n in zip(ips, ['Living Room', 'Kitchen', 'Office', 'Patio'])}
-    st = {ip: {'state': 'PLAYING' if i == 0 else 'STOPPED', 'vol': 25, 'mute': 0, 'coord': uuids[ip], 'led': 'On'} for i, ip in enumerate(ips)}
+    models = {ip: m for ip, m in zip(ips, ['Sonos One', 'Sonos Era 100', 'Sonos Arc', 'Sonos One'])}
+    def track(i, t, a, al):
+        return {'uri': f'x-sonos-spotify:spotify%3atrack%3asim{i}?sid=12&flags=8224&sn=1', 'title': t, 'artist': a, 'album': al, 'dur': '0:03:30',
+                'art': f'/getaa?s=1&u=x-sonos-spotify%3aspotify%253atrack%253asim{i}%3fsid%3d12'}
+    tracks = [track(1, 'Weightless', 'Marconi Union', 'Ambient'), track(2, 'Midnight City', 'M83', 'Hurry Up, We’re Dreaming'),
+              track(3, 'Breathe Deeper', 'Tame Impala', 'The Slow Rush'), track(4, 'Rock & Roll', 'Led Zeppelin', 'IV')]
+    ytm = {'uri': 'x-sonosapi-hls-static:ALkSOiGh9I73trQZHA5HxwnkhgHoAR?sid=284&flags=8&sn=2', 'title': 'Space Blues', 'artist': 'Sweeps', 'album': '', 'dur': '0:02:29',
+           'art': '/getaa?s=1&u=x-sonosapi-hls-static%3aALkSOiGh9I73trQZHA5HxwnkhgHoAR%3fsid%3d284%26flags%3d8%26sn%3d2'}
+    st = {}
+    for i, ip in enumerate(ips):
+        st[ip] = {'state': 'PLAYING' if i == 0 else 'STOPPED', 'vol': 25, 'mute': 0, 'coord': uuids[ip], 'led': 'On', 'lock': 'Off',
+                  'uri': f'x-rincon-queue:{uuids[ip]}#0' if i == 0 else f'x-sonos-vli:{uuids[ip]}:3,cloud:dead-session', 'meta': '',
+                  'queue': list(tracks) if i == 0 else tracks[:3], 'track': 1, 'mode': 'NORMAL', 'xfade': 0, 'sleep': '', 'eq': {}}
+    alarms = {'12': {'ID': '12', 'StartTime': '07:00:00', 'Duration': '02:00:00', 'Recurrence': 'WEEKDAYS', 'Enabled': '1', 'RoomUUID': uuids[ips[0]],
+                     'ProgramURI': 'x-rincon-buzzer:0', 'ProgramMetaData': '', 'PlayMode': 'SHUFFLE_NOREPEAT', 'Volume': '25', 'IncludeLinkedZones': '0'}}
     def topology():
         groups = {}
         for ip in ips: groups.setdefault(st[ip]['coord'], []).append(ip)
@@ -148,15 +168,31 @@ def sonos(ips):
         for coord, members in groups.items():
             x += f'<ZoneGroup Coordinator="{coord}" ID="{coord}:1">' + ''.join(f'<ZoneGroupMember UUID="{uuids[m]}" Location="http://{m}:1400/xml/device_description.xml" ZoneName="{names[m]}"/>' for m in members) + '</ZoneGroup>'
         x += '</ZoneGroups></ZoneGroupState>'
-        return x.replace('&', '&amp;').replace('<', '&lt;').replace('>', '&gt;')
+        return xesc(x)
+    def didl(t, item_id='-1', parent='-1'):
+        return (f'<DIDL-Lite xmlns:dc="http://purl.org/dc/elements/1.1/" xmlns:upnp="urn:schemas-upnp-org:metadata-1-0/upnp/" xmlns:r="urn:schemas-rinconnetworks-com:metadata-1-0/" xmlns="urn:schemas-upnp-org:metadata-1-0/DIDL-Lite/">'
+                f'<item id="{item_id}" parentID="{parent}" restricted="true"><res protocolInfo="sonos.com-http:*:audio/mp4:*" duration="{t["dur"]}">{xesc(t["uri"])}</res>'
+                f'<upnp:albumArtURI>{xesc(t["art"])}</upnp:albumArtURI><dc:title>{xesc(t["title"])}</dc:title><upnp:class>object.item.audioItem.musicTrack</upnp:class>'
+                f'<dc:creator>{xesc(t["artist"])}</dc:creator><upnp:album>{xesc(t["album"])}</upnp:album></item></DIDL-Lite>')
+    def coord_ip(ip):
+        return next((m for m in ips if uuids[m] == st[ip]['coord']), ip)
+    def current(s):
+        if s['uri'].startswith('x-rincon-queue:') and s['queue']: return s['queue'][min(s['track'], len(s['queue'])) - 1]
+        if 'dead' in s['uri']: return ytm
+        return None
     def make(ip):
         class H(http.server.BaseHTTPRequestHandler):
             def log_message(self, *a): pass
             def reply(self, body, code=200, ctype='text/xml'):
-                b = body.encode(); self.send_response(code); self.send_header('Content-Type', ctype); self.send_header('Content-Length', str(len(b))); self.end_headers(); self.wfile.write(b)
+                b = body if isinstance(body, bytes) else body.encode(); self.send_response(code); self.send_header('Content-Type', ctype); self.send_header('Content-Length', str(len(b))); self.end_headers(); self.wfile.write(b)
             def do_GET(self):
                 if self.path == '/xml/device_description.xml':
-                    self.reply(f'<?xml version="1.0"?><root><device><deviceType>urn:schemas-upnp-org:device:ZonePlayer:1</deviceType><friendlyName>{ip} - Sonos One</friendlyName><manufacturer>Sonos, Inc.</manufacturer><modelNumber>S18</modelNumber><modelName>Sonos One</modelName><softwareVersion>83.1-61240</softwareVersion><hardwareVersion>1.20.1.6-2.1</hardwareVersion><serialNum>48-A6-B8-00-00-{ip.split(".")[-1]}:A</serialNum><UDN>uuid:{uuids[ip]}</UDN><roomName>{names[ip]}</roomName><displayVersion>16.4</displayVersion><apiVersion>1.40.0</apiVersion></device></root>')
+                    self.reply(f'<?xml version="1.0"?><root><device><deviceType>urn:schemas-upnp-org:device:ZonePlayer:1</deviceType><friendlyName>{ip} - {models[ip]}</friendlyName><manufacturer>Sonos, Inc.</manufacturer><modelNumber>S18</modelNumber><modelName>{models[ip]}</modelName><softwareVersion>83.1-61240</softwareVersion><hardwareVersion>1.20.1.6-2.1</hardwareVersion><serialNum>48-A6-B8-00-00-{ip.split(".")[-1]}:A</serialNum><UDN>uuid:{uuids[ip]}</UDN><roomName>{names[ip]}</roomName><displayVersion>16.4</displayVersion><apiVersion>1.40.0</apiVersion></device></root>')
+                elif self.path.startswith('/getaa?'):
+                    log('sonos.art', ip=ip, path=self.path)
+                    global PNG
+                    PNG = PNG or png_bytes(64, 64)
+                    self.reply(PNG, ctype='image/png')
                 else: self.reply('', 404)
             def do_POST(self):
                 n = int(self.headers.get('content-length', 0)); body = self.rfile.read(n).decode()
@@ -166,35 +202,132 @@ def sonos(ips):
                 def resp(inner=''):
                     svc = re.search(r'service:(\w+):1', self.headers.get('soapaction') or '').group(1)
                     return self.reply(f'<?xml version="1.0"?><s:Envelope xmlns:s="http://schemas.xmlsoap.org/soap/envelope/"><s:Body><u:{action}Response xmlns:u="urn:schemas-upnp-org:service:{svc}:1">{inner}</u:{action}Response></s:Body></s:Envelope>')
-                val = lambda tag: (re.search(f'<{tag}>(.*?)</{tag}>', body) or [None, ''])[1]
+                def fault(code):
+                    log('sonos.fault', ip=ip, action=action, code=code)
+                    return self.reply(f'<s:Envelope xmlns:s="http://schemas.xmlsoap.org/soap/envelope/"><s:Body><s:Fault><faultcode>s:Client</faultcode><faultstring>UPnPError</faultstring><detail><UPnPError xmlns="urn:schemas-upnp-org:control-1-0"><errorCode>{code}</errorCode></UPnPError></detail></s:Fault></s:Body></s:Envelope>', 500)
+                val = lambda tag: xun((re.search(f'<{tag}>(.*?)</{tag}>', body, re.S) or [None, ''])[1])
+                member = s['coord'] != uuids[ip]
+                group = [m for m in ips if st[m]['coord'] == s['coord']]
                 if action == 'GetZoneGroupState': return resp(f'<ZoneGroupState>{topology()}</ZoneGroupState>')
-                if action == 'GetTransportInfo': return resp(f'<CurrentTransportState>{s["state"]}</CurrentTransportState><CurrentTransportStatus>OK</CurrentTransportStatus><CurrentSpeed>1</CurrentSpeed>')
+                # ---- AVTransport
+                if action == 'GetTransportInfo': return resp(f'<CurrentTransportState>{st[coord_ip(ip)]["state"] if member else s["state"]}</CurrentTransportState><CurrentTransportStatus>OK</CurrentTransportStatus><CurrentSpeed>1</CurrentSpeed>')
                 if action == 'GetPositionInfo':
-                    didl = '&lt;DIDL-Lite&gt;&lt;item&gt;&lt;dc:title&gt;Weightless&lt;/dc:title&gt;&lt;dc:creator&gt;Marconi Union&lt;/dc:creator&gt;&lt;upnp:album&gt;Ambient&lt;/upnp:album&gt;&lt;/item&gt;&lt;/DIDL-Lite&gt;'
-                    return resp(f'<Track>1</Track><TrackDuration>0:08:00</TrackDuration><TrackMetaData>{didl}</TrackMetaData><RelTime>0:01:23</RelTime>')
+                    t = current(s)
+                    if not t: return resp('<Track>0</Track><TrackDuration>0:00:00</TrackDuration><TrackMetaData></TrackMetaData><TrackURI></TrackURI><RelTime>0:00:00</RelTime>')
+                    return resp(f'<Track>{s["track"] if s["uri"].startswith("x-rincon-queue:") else 1}</Track><TrackDuration>{t["dur"]}</TrackDuration><TrackMetaData>{xesc(didl(t))}</TrackMetaData><TrackURI>{xesc(t["uri"])}</TrackURI><RelTime>{"0:01:23" if s["state"] == "PLAYING" else "0:00:00"}</RelTime>')
+                if action == 'GetMediaInfo':
+                    uri = f'x-rincon:{s["coord"]}' if member else s['uri']
+                    nr = len(s['queue']) if uri.startswith('x-rincon-queue:') else (1 if uri else 0)
+                    return resp(f'<NrTracks>{nr}</NrTracks><MediaDuration>NOT_IMPLEMENTED</MediaDuration><CurrentURI>{xesc(uri)}</CurrentURI><CurrentURIMetaData>{xesc(s["meta"])}</CurrentURIMetaData><NextURI></NextURI><NextURIMetaData></NextURIMetaData><PlayMedium>NETWORK</PlayMedium>')
+                if action == 'GetCurrentTransportActions':
+                    q = s['uri'].startswith('x-rincon-queue:')
+                    return resp(f'<Actions>{"Set, Stop, Pause, Play, X_DLNA_SeekTime, Next, Previous, X_DLNA_SeekTrackNr" if q else "Set, Stop, Play"}</Actions>')
+                if action in ('Play', 'Pause', 'Stop', 'Next', 'Previous', 'Seek', 'SetPlayMode', 'ConfigureSleepTimer', 'SetCrossfadeMode', 'RemoveAllTracksFromQueue') and member:
+                    return fault(800)
+                if action == 'Play':
+                    if 'dead' in s['uri'] or not s['uri'] or (s['uri'].startswith('x-rincon-queue:') and not s['queue']): return fault(701)
+                    s['state'] = 'PLAYING'; return resp()
+                if action == 'Pause':
+                    if s['state'] != 'PLAYING': return fault(701)
+                    s['state'] = 'PAUSED_PLAYBACK'; return resp()
+                if action == 'Stop': s['state'] = 'STOPPED'; return resp()
+                if action in ('Next', 'Previous'):
+                    if not s['uri'].startswith('x-rincon-queue:'): return fault(701)
+                    s['track'] = max(1, min(len(s['queue']), s['track'] + (1 if action == 'Next' else -1))); return resp()
+                if action == 'Seek':
+                    unit, target = val('Unit'), val('Target')
+                    if unit == 'TRACK_NR':
+                        if not s['uri'].startswith('x-rincon-queue:') or not (1 <= int(target or 0) <= len(s['queue'])): return fault(711)
+                        s['track'] = int(target)
+                    else: s['rel'] = target
+                    return resp()
+                if action == 'SetAVTransportURI':
+                    uri = val('CurrentURI')
+                    if uri.startswith('x-rincon:'): s['coord'] = uri.split(':', 1)[1]
+                    else:
+                        s['coord'] = uuids[ip]; s['uri'] = uri; s['meta'] = val('CurrentURIMetaData'); s['state'] = 'STOPPED'
+                    return resp()
+                if action == 'BecomeCoordinatorOfStandaloneGroup': s['coord'] = uuids[ip]; s['state'] = 'STOPPED'; return resp()
+                if action == 'GetTransportSettings': return resp(f'<PlayMode>{s["mode"]}</PlayMode><RecQualityMode>NOT_IMPLEMENTED</RecQualityMode>')
+                if action == 'SetPlayMode':
+                    if not s['uri'].startswith('x-rincon-queue:'): return fault(712)
+                    s['mode'] = val('NewPlayMode'); return resp()
+                if action == 'GetCrossfadeMode': return resp(f'<CrossfadeMode>{s["xfade"]}</CrossfadeMode>')
+                if action == 'SetCrossfadeMode': s['xfade'] = int(val('CrossfadeMode') or 0); return resp()
+                if action == 'ConfigureSleepTimer': s['sleep'] = val('NewSleepTimerDuration'); s['last_ConfigureSleepTimer'] = body[-300:]; return resp()
+                if action == 'GetRemainingSleepTimerDuration': return resp(f'<RemainingSleepTimerDuration>{s["sleep"]}</RemainingSleepTimerDuration><CurrentSleepTimerGeneration>1</CurrentSleepTimerGeneration>')
+                if action == 'RemoveAllTracksFromQueue':
+                    if not s['queue']: return fault(804)
+                    s['queue'] = []; s['track'] = 1; return resp()
+                if action == 'AddURIToQueue':
+                    uri = val('EnqueuedURI')
+                    many = 'container' in uri or 'savedqueues' in uri
+                    added = [track(10 + i, f'{"Playlist" if many else "Track"} item {i + 1}', 'Various', 'Sim') for i in range(3 if many else 1)]
+                    first = len(s['queue']) + 1; s['queue'] += added
+                    return resp(f'<FirstTrackNumberEnqueued>{first}</FirstTrackNumberEnqueued><NumTracksAdded>{len(added)}</NumTracksAdded><NewQueueLength>{len(s["queue"])}</NewQueueLength>')
+                if action == 'RemoveTrackFromQueue':
+                    m = re.match(r'Q:0/(\d+)$', val('ObjectID'))
+                    if not m or not (1 <= int(m.group(1)) <= len(s['queue'])): return fault(701)
+                    del s['queue'][int(m.group(1)) - 1]; s['track'] = max(1, min(s['track'], len(s['queue']) or 1)); return resp()
+                # ---- RenderingControl / GroupRenderingControl
                 if action == 'GetVolume': return resp(f'<CurrentVolume>{s["vol"]}</CurrentVolume>')
                 if action == 'SetVolume': s['vol'] = int(val('DesiredVolume') or 0); return resp()
                 if action == 'GetMute': return resp(f'<CurrentMute>{s["mute"]}</CurrentMute>')
                 if action == 'SetMute': s['mute'] = int(val('DesiredMute') or 0); return resp()
-                if action in ('Play', 'Pause', 'Stop', 'Next', 'Previous'):
-                    s['state'] = {'Play': 'PLAYING', 'Pause': 'PAUSED_PLAYBACK', 'Stop': 'STOPPED'}.get(action, s['state']); return resp()
-                if action == 'SetAVTransportURI':
-                    uri = val('CurrentURI');
-                    if uri.startswith('x-rincon:'): s['coord'] = uri.split(':', 1)[1]
+                if action == 'SnapshotGroupVolume': return resp()
+                if action == 'GetGroupVolume': return resp(f'<CurrentVolume>{round(sum(st[m]["vol"] for m in group) / len(group))}</CurrentVolume>')
+                if action in ('SetGroupVolume', 'SetRelativeGroupVolume'):
+                    cur = round(sum(st[m]['vol'] for m in group) / len(group))
+                    want = int(val('DesiredVolume') or 0) if action == 'SetGroupVolume' else cur + int(val('Adjustment') or 0)
+                    for m in group: st[m]['vol'] = max(0, min(100, st[m]['vol'] + want - cur))
+                    return resp(f'<NewVolume>{max(0, min(100, want))}</NewVolume>' if action == 'SetRelativeGroupVolume' else '')
+                if action == 'GetGroupMute': return resp(f'<CurrentMute>{int(all(st[m]["mute"] for m in group))}</CurrentMute>')
+                if action == 'SetGroupMute':
+                    for m in group: st[m]['mute'] = int(val('DesiredMute') or 0)
                     return resp()
-                if action == 'BecomeCoordinatorOfStandaloneGroup': s['coord'] = uuids[ip]; return resp()
-                if action == 'SetLEDState': s['led'] = val('DesiredLEDState'); return resp()
-                if action == 'Browse':
-                    items = ('&lt;DIDL-Lite&gt;&lt;item id="FV:2/1"&gt;&lt;dc:title&gt;Triple J&lt;/dc:title&gt;&lt;res&gt;x-sonosapi-stream:s25065?sid=254&lt;/res&gt;&lt;r:resMD&gt;&amp;lt;DIDL-Lite&amp;gt;&amp;lt;/DIDL-Lite&amp;gt;&lt;/r:resMD&gt;&lt;/item&gt;'
-                             '&lt;item id="FV:2/2"&gt;&lt;dc:title&gt;Chill Mix&lt;/dc:title&gt;&lt;res&gt;x-rincon-cpcontainer:1006206cspotify%3aplaylist%3a1&lt;/res&gt;&lt;/item&gt;&lt;/DIDL-Lite&gt;')
-                    return resp(f'<Result>{items}</Result><NumberReturned>2</NumberReturned><TotalMatches>2</TotalMatches>')
                 if action in ('SetBass', 'SetTreble', 'SetLoudness'):
                     s[action[3:].lower()] = int(val('Desired' + action[3:]) or 0); return resp()
                 if action == 'GetBass': return resp(f'<CurrentBass>{s.get("bass", 0)}</CurrentBass>')
                 if action == 'GetTreble': return resp(f'<CurrentTreble>{s.get("treble", 0)}</CurrentTreble>')
                 if action == 'GetLoudness': return resp(f'<CurrentLoudness>{s.get("loudness", 1)}</CurrentLoudness>')
-                if action in ('ConfigureSleepTimer', 'RemoveAllTracksFromQueue', 'AddURIToQueue', 'SetEQ'): s['last_' + action] = body[-300:]; return resp()
-                return self.reply('<s:Envelope><s:Body><s:Fault><detail><UPnPError><errorCode>401</errorCode></UPnPError></detail></s:Fault></s:Body></s:Envelope>', 500)
+                if action in ('SetEQ', 'GetEQ'):
+                    t = val('EQType')
+                    if models[ip] != 'Sonos Arc': return fault(402)  # only soundbars have night/speech/surround levels
+                    if action == 'SetEQ': s['eq'][t] = int(val('DesiredValue') or 0); s['last_SetEQ'] = body[-300:]; return resp()
+                    return resp(f'<CurrentValue>{s["eq"].get(t, 0)}</CurrentValue>')
+                # ---- DeviceProperties
+                if action == 'SetLEDState': s['led'] = val('DesiredLEDState'); return resp()
+                if action == 'GetLEDState': return resp(f'<CurrentLEDState>{s["led"]}</CurrentLEDState>')
+                if action == 'SetButtonLockState': s['lock'] = val('DesiredButtonLockState'); return resp()
+                if action == 'GetButtonLockState': return resp(f'<CurrentButtonLockState>{s["lock"]}</CurrentButtonLockState>')
+                # ---- ContentDirectory
+                if action == 'Browse':
+                    oid = val('ObjectID')
+                    if oid == 'FV:2':
+                        items = ('<DIDL-Lite><item id="FV:2/1"><dc:title>Triple J</dc:title><res>x-sonosapi-stream:s25065?sid=254</res><r:resMD>&lt;DIDL-Lite&gt;&lt;/DIDL-Lite&gt;</r:resMD></item>'
+                                 '<item id="FV:2/2"><dc:title>Chill Mix</dc:title><res>x-rincon-cpcontainer:1006206cspotify%3aplaylist%3a1</res></item></DIDL-Lite>')
+                        return resp(f'<Result>{xesc(items)}</Result><NumberReturned>2</NumberReturned><TotalMatches>2</TotalMatches>')
+                    if oid == 'SQ:':
+                        items = ('<DIDL-Lite><container id="SQ:3" parentID="SQ:" restricted="true"><dc:title>Dinner &amp; Drinks</dc:title><res protocolInfo="file:*:audio/mpegurl:*">file:///jffs/settings/savedqueues.rsq#3</res><upnp:class>object.container.playlistContainer</upnp:class></container>'
+                                 '<container id="SQ:7" parentID="SQ:" restricted="true"><dc:title>Sunday</dc:title><res protocolInfo="file:*:audio/mpegurl:*">file:///jffs/settings/savedqueues.rsq#7</res><upnp:class>object.container.playlistContainer</upnp:class></container></DIDL-Lite>')
+                        return resp(f'<Result>{xesc(items)}</Result><NumberReturned>2</NumberReturned><TotalMatches>2</TotalMatches>')
+                    if oid == 'Q:0':
+                        start, count = int(val('StartingIndex') or 0), int(val('RequestedCount') or 100)
+                        page = s['queue'][start:start + count]
+                        items = '<DIDL-Lite>' + ''.join(re.sub(r'^<DIDL-Lite[^>]*>|</DIDL-Lite>$', '', didl(t, f'Q:0/{start + i + 1}', 'Q:0')) for i, t in enumerate(page)) + '</DIDL-Lite>'
+                        return resp(f'<Result>{xesc(items)}</Result><NumberReturned>{len(page)}</NumberReturned><TotalMatches>{len(s["queue"])}</TotalMatches>')
+                    return fault(701)
+                # ---- AlarmClock
+                if action == 'ListAlarms':
+                    x = '<Alarms>' + ''.join('<Alarm ' + ' '.join(f'{k}="{xesc(v, {chr(34): "&quot;"})}"' for k, v in a.items()) + '/>' for a in alarms.values()) + '</Alarms>'
+                    return resp(f'<CurrentAlarmList>{xesc(x)}</CurrentAlarmList><CurrentAlarmListVersion>{uuids[ips[0]]}:7</CurrentAlarmListVersion>')
+                if action == 'UpdateAlarm':
+                    a = alarms.get(val('ID'))
+                    if not a: return fault(801)
+                    a.update({'StartTime': val('StartLocalTime'), 'Duration': val('Duration'), 'Recurrence': val('Recurrence'), 'Enabled': val('Enabled'), 'RoomUUID': val('RoomUUID'),
+                              'ProgramURI': val('ProgramURI'), 'ProgramMetaData': val('ProgramMetaData'), 'PlayMode': val('PlayMode'), 'Volume': val('Volume'), 'IncludeLinkedZones': val('IncludeLinkedZones')})
+                    log('sonos.alarm', ip=ip, alarm=a); return resp()
+                return fault(401)
         return H
     for ip in ips:
         threading.Thread(target=ThreadingHTTP((ip, 1400), make(ip)).serve_forever, daemon=True).start()

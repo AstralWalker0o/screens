@@ -7,6 +7,8 @@ import { adapterFor, DISCOVERY_MDNS, DISCOVERY_PORTS, fingerprint, parseSonosDes
 import type { AdapterCtx } from '../adapters/types';
 import { AdapterError, xmlTag } from '../adapters/types';
 import { htmlUnescape } from '../adapters/samsung';
+import { fetchArt as fetchSonosArt, siteOverview as sonosSiteOverview } from '../adapters/sonos';
+import type { SonosSiteOverview } from '../../shared/sonos';
 import { classify, compilePolicies, refreshLists } from '../dns/compile';
 import { buildDnsConfig } from '../dns/config';
 import { certNotAfter, issueCertificate, upsertRecord, zoneId } from '../acme/acme';
@@ -27,6 +29,8 @@ const TICK_MS = 60_000;
 const QUIET_COMMANDS = new Set(['key', 'text', 'tap', 'volume', 'mute', 'media', 'screenshot', 'refresh', 'apps', 'topology', 'mic_usage', 'launcher_status', 'welcome_show']);
 const JOB_COMMANDS = new Set(['install', 'uninstall', 'guest_reset', 'reboot', 'private_dns', 'shell', 'clear', 'disable', 'enable', 'restore', 'launcher_install', 'launcher_config', 'launcher_remove', 'debloat', 'revoke_permission', 'grant_permission']);
 const OFFLINE_AFTER_FAILS = 3;
+/** Background status reads: their failures don't replace a device's last_error. */
+const STATUS_READS = new Set(['refresh', 'status', 'topology', 'apps']);
 
 export class SiteHub extends DurableObject<Env> {
   private sql: SqlStorage;
@@ -457,14 +461,34 @@ export class SiteHub extends DurableObject<Env> {
       }
       if (row.status === 'offline' || row.status === 'unknown') this.ctx.waitUntil(this.updateDevice(row, { status: 'online', last_seen: now() }));
       if (jobId) await finishJob(this.env, jobId, result?.ok === false ? 'error' : 'ok', result);
-      if (!QUIET_COMMANDS.has(command)) await audit(this.env, actor, `device.${command}`, { target_type: 'device', target_id: deviceId, site_id: this.siteId, details: { args: redactArgs(command, args), ok: result?.ok } });
+      if (parseJson<any>(row.facts, {}).last_error?.command === command) this.ctx.waitUntil(this.updateDevice(row, { facts: { last_error: null } }).catch(() => undefined));
+      if (!QUIET_COMMANDS.has(command) && !adapter.quiet?.has(command)) await audit(this.env, actor, `device.${command}`, { target_type: 'device', target_id: deviceId, site_id: this.siteId, details: { args: redactArgs(command, args), ok: result?.ok } });
       return result;
     } catch (e: any) {
       if (jobId) await finishJob(this.env, jobId, 'error', { error: e.message, code: e.code });
+      // Quiet commands (media, volume…) aren't audited: keep the last failure on the device so operators can see it.
+      if (!STATUS_READS.has(command)) this.ctx.waitUntil(this.updateDevice(row, { facts: { last_error: { command, message: String(e?.message ?? e).slice(0, 500), code: e?.code ?? 'error', at: now() } } }).catch(() => undefined));
       if (e.code === 'adb_unauthorized' || e.code === 'unauthorized') await this.updateDevice(row, { status: 'unauthorized' });
       if (e.code === 'pairing') await this.updateDevice(row, { status: 'pairing' });
       throw e;
     }
+  }
+
+  // ---------------------------------------------------------------- Sonos (site-wide view, album art)
+  /** All Sonos rooms/groups at the site, read live through one reachable speaker. */
+  async sonosOverview(): Promise<SonosSiteOverview> {
+    const rows = (await this.env.DB.prepare("SELECT * FROM devices WHERE site_id = ? AND kind = 'sonos' ORDER BY name").bind(this.siteId).all<Row>()).results;
+    if (!rows.length) throw new HttpError(404, 'not_found', 'There are no Sonos speakers at this site');
+    const order = (r: Row) => (r.status === 'online' ? 0 : r.status === 'offline' ? 2 : 1);
+    const anchor = [...rows].sort((a, b) => order(a) - order(b))[0];
+    return sonosSiteOverview(this.makeCtx(anchor), rows);
+  }
+
+  /** Album art from a speaker ("/getaa?…"), base64; the Worker route caches and serves it. */
+  async sonosArt(deviceId: string, path: string) {
+    const row = await this.deviceRow(deviceId);
+    if (row.kind !== 'sonos') throw new HttpError(400, 'not_supported', 'Album art is only available for Sonos speakers');
+    return fetchSonosArt(this.makeCtx(row), path);
   }
 
   async syncApps(rowOrId: Row | string): Promise<any[]> {
@@ -1140,6 +1164,7 @@ export class SiteHub extends DurableObject<Env> {
       gatewayAction: this.gatewayAction, disconnectAgent: this.disconnectAgent, guestReset: this.guestReset, enforceApps: this.enforceApps,
       runAutomation: this.runAutomation, pushDnsConfig: this.pushDnsConfig, pushMdnsConfig: this.pushMdnsConfig, status: this.status,
       requestDot: this.requestDot, flushAggregates: this.flushAggregates, pushLauncherConfig: this.pushLauncherConfig,
+      sonosOverview: this.sonosOverview, sonosArt: this.sonosArt,
     };
     const fn = allowed[method];
     if (!fn) return { ok: false, status: 400, code: 'bad_method', message: `Unknown hub method ${method}` };

@@ -76,15 +76,8 @@ export interface KioskConfig {
   pin?: string;                      // write-only: 4–8 digits to set, "" to clear
 }
 
-/** Sonos speaker facts (Device.facts for kind 'sonos'). */
-export interface SonosFacts {
-  uuid: string; room?: string; model_number?: string; display_version?: string; led?: boolean | null;
-  now_playing?: { state?: string; title?: string; artist?: string; album?: string; art?: string; volume?: number; muted?: boolean };
-  position?: { elapsed_s: number | null; duration_s: number | null };
-  group?: { coordinator: string; is_coordinator: boolean; members: { uuid: string; name: string; ip: string | null }[] };
-  zones?: { uuid: string; name: string; ip: string | null; coordinator: string }[];
-  eq?: { bass: number; treble: number; loudness: boolean; night_mode?: boolean | string; speech?: boolean | string };
-}
+/** Sonos speaker facts (Device.facts for kind 'sonos') and the other Sonos shapes live in ./sonos. */
+export type * from './sonos';
 
 /** Screens Launcher state on an Android device (Device.facts.launcher). */
 export interface LauncherState { installed: boolean; version?: string | null; config_sha?: string | null; is_home?: boolean; checked_at?: number }
