@@ -362,7 +362,9 @@ def main():
             sh2 = api('POST', f'/api/sites/{sid}/adopt', {'ip': '10.99.0.11', 'kind': 'android', 'name': 'Bedroom Shield'})['id']
             wait(lambda: api('GET', f'/api/devices/{sh2}')['model'] == 'SHIELD Android TV', 40)
             t9 = time.time()
-            r = api('POST', f'/api/devices/{sh2}/command', {'command': 'launcher_install'}, timeout=180)
+            # "Install launcher" always picks the newest launcher in the library, so put this exact old build on the box.
+            api('POST', f'/api/devices/{sh2}/command', {'command': 'install', 'args': {'apk_id': apk1['id']}}, timeout=180)
+            r = api('POST', f'/api/devices/{sh2}/command', {'command': 'launcher_config'}, timeout=180)
             cfg2 = [e for e in sim_events('android.launcher_config', t9) if e['ip'] == '10.99.0.11']
             check('1.0.0 box: installed, sent config v1 (no home)', r['ok'] and r['data']['status'].get('version') == '1.0.0' and cfg2 and all(e['v'] == 1 for e in cfg2), json.dumps([r, cfg2])[:400])
             check('1.0.0 box: no pictures pushed, no content provider calls', not [e for e in sim_events('android.push', t9) if e['ip'] == '10.99.0.11'] and not [e for e in sim_events('android.shell', t9) if e['ip'] == '10.99.0.11' and e['cmd'].startswith('content ')])

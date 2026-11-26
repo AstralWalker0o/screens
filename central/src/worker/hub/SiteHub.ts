@@ -494,10 +494,23 @@ export class SiteHub extends DurableObject<Env> {
   }
 
   /** Check candidate addresses for a device and follow it to the first one that proves to be the same device. */
+  private verifying = new Map<string, Promise<string | null>>();
   private async verifyMove(id: string, candidates: string[], why: string, mode: 'background' | 'interactive' = 'background', strict = false): Promise<string | null> {
+    // One check per device at a time: wait for one already running. Only background checks are time-limited.
+    const running = this.verifying.get(id);
+    if (running) {
+      const ip = await running.catch(() => null);
+      if (ip || mode === 'background') return ip;
+    }
     const key = `verify:${id}`;
-    if (now() - this.kv<number>(key, 0) < (mode === 'interactive' ? 10_000 : 120_000)) return null;
+    if (mode === 'background' && now() - this.kv<number>(key, 0) < 120_000) return null;
     this.setKv(key, now());
+    const p = this.verifyMoveNow(id, candidates, why, strict);
+    this.verifying.set(id, p);
+    try { return await p; } finally { if (this.verifying.get(id) === p) this.verifying.delete(id); }
+  }
+
+  private async verifyMoveNow(id: string, candidates: string[], why: string, strict: boolean): Promise<string | null> {
     const row = await this.deviceRow(id);
     const ips = [...new Set(candidates)].filter((ip) => ip !== row.ip && isPrivateIPv4(ip)).slice(0, 24);
     if (!ips.length) return null;
@@ -520,11 +533,23 @@ export class SiteHub extends DurableObject<Env> {
    * Re-find a device that stopped answering at its last IP. Sonos asks the other speakers; everything else is
    * found by MAC in the gateway's neighbor table, after an ARP sweep of its subnet if needed. Rate-limited.
    */
+  private locating = new Map<string, Promise<string | null>>();
   async locateDevice(id: string, why: string, mode: 'background' | 'interactive' = 'background'): Promise<string | null> {
     if (!this.online) return null;
+    const running = this.locating.get(id);
+    if (running) {
+      const ip = await running.catch(() => null);
+      if (ip || mode === 'background') return ip;
+    }
     const key = `locate:${id}`;
-    if (now() - this.kv<number>(key, 0) < (mode === 'interactive' ? 15_000 : 10 * 60_000)) return null;
+    if (now() - this.kv<number>(key, 0) < (mode === 'interactive' ? 5_000 : 10 * 60_000)) return null;
     this.setKv(key, now());
+    const p = this.locateNow(id, why, mode);
+    this.locating.set(id, p);
+    try { return await p; } finally { if (this.locating.get(id) === p) this.locating.delete(id); }
+  }
+
+  private async locateNow(id: string, why: string, mode: 'background' | 'interactive'): Promise<string | null> {
     const row = await this.deviceRow(id);
     if (row.kind === 'sonos') {
       const ip = await this.sonosAddressOf(row).catch(() => null);
@@ -549,11 +574,11 @@ export class SiteHub extends DurableObject<Env> {
         byPort = (res?.hosts ?? []).filter((h) => h.ip !== row.ip && (h.open_ports ?? []).includes(port)).map((h) => h.ip);
       }
     }
-    let ip = cands.length ? await this.verifyMove(id, cands, why, mode) : null;
+    // Fresh candidates from this lookup are always checked here (not deduped against older passive checks).
+    let ip = cands.length ? await this.verifyMoveNow(id, cands, why, false) : null;
     // No MAC match (or no MAC known yet): only an address that positively identifies as this device will do.
     if (!ip && byPort.length && row.kind !== 'lg' && row.kind !== 'other') {
-      this.setKv(`verify:${id}`, 0);
-      ip = await this.verifyMove(id, byPort, `${why}, port sweep`, mode, true);
+      ip = await this.verifyMoveNow(id, byPort, `${why}, port sweep`, true);
     }
     if (!ip) this.diag('info', 'locate', `${row.name}: not found on the network (${why})`, { device_id: id, mac, last_ip: row.ip, candidates: cands, by_port: byPort.slice(0, 20) });
     return ip;
@@ -584,7 +609,8 @@ export class SiteHub extends DurableObject<Env> {
   }
 
   /** Follow a device to its new IP: update the record, history, DNS attribution, stale connections and the audit log. */
-  private async moveDevice(row: Row, ip: string, how: string, why: string) {
+  private async moveDevice(stale: Row, ip: string, how: string, why: string) {
+    const row = await this.deviceRow(stale.id); // another check may have moved it already
     const old = (row.ip as string | null) ?? null;
     if (ip === old || !isPrivateIPv4(ip)) return;
     const facts = parseJson<any>(row.facts, {});
