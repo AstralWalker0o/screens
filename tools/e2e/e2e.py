@@ -552,6 +552,51 @@ def main():
                 check('network: no stray scr* links left', not [n for n in os.listdir('/sys/class/net') if n.startswith('scr')], str(os.listdir('/sys/class/net')))
         except Exception as e:
             check('section network legs completed', False, str(e)[:300])
+        print('== devices that change IP (DHCP)')
+        movers = []
+        mv = None
+        def ns(*cmd): subprocess.run(['ip', 'netns', 'exec', NETNS, *cmd], capture_output=True)
+        def box(ip):  # one simulated Shield (serial SIM0041) answering on `ip`
+            ns('ip', 'addr', 'add', f'{ip}/24', 'dev', 'simeth0')
+            p = subprocess.Popen(['ip', 'netns', 'exec', NETNS, 'python3', os.path.join(ROOT, 'tools', 'sim', 'sim.py'), '--android', ip, '--android-base', '40'], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+            movers.append((p, ip))
+            wait(lambda: socket.create_connection((ip, 5555), 1).close() is None, 15, 0.3)
+        def unplug():
+            p, ip = movers.pop()
+            p.terminate(); p.wait(5)
+            ns('ip', 'addr', 'del', f'{ip}/24', 'dev', 'simeth0')
+        try:
+            box('10.99.0.40')
+            mv = api('POST', f'/api/sites/{sid}/adopt', {'ip': '10.99.0.40', 'kind': 'android', 'name': 'Mover Shield'})['id']
+            ok = wait(lambda: (lambda d: d if d['status'] == 'online' and d.get('serial') == 'SIM0041' else None)(api('GET', f'/api/devices/{mv}')), 40)
+            check('dhcp: box adopted (serial SIM0041)', ok)
+            # 1. It gets a new lease and goes quiet: a refresh finds it gone, sweeps the subnet and proves it by serial.
+            unplug(); box('10.99.0.41')
+            try: api('POST', f'/api/devices/{mv}/command', {'command': 'refresh'}, timeout=120)
+            except AssertionError: pass
+            ok = wait(lambda: api('GET', f'/api/devices/{mv}')['ip'] == '10.99.0.41', 90, 2)
+            check('dhcp: device followed to its new IP after it stopped answering', ok, str(api('GET', f'/api/devices/{mv}').get('ip')))
+            d = api('GET', f'/api/devices/{mv}')
+            check('dhcp: address history recorded', (d['facts'].get('ip_history') or [{}])[0].get('from') == '10.99.0.40', json.dumps(d['facts'].get('ip_history')))
+            others = {x['id']: x['ip'] for x in api('GET', f'/api/sites/{sid}')['devices']}
+            check('dhcp: shared MAC did not pull other boxes onto the new address', list(others.values()).count('10.99.0.41') == 1, str(others))
+            aud = api('GET', f'/api/audit?site_id={sid}&limit=50')
+            check('dhcp: move written to the audit log', any(a['action'] == 'device.moved' and a.get('target_id') == mv for a in aud), str([a['action'] for a in aud][:10]))
+            # 2. It moves again while someone presses a button: the command finds it and succeeds.
+            unplug(); box('10.99.0.42')
+            try: socket.create_connection(('10.99.0.42', 5555), 2).close()  # the gateway's kernel learns the new neighbour (same netns)
+            except OSError: pass
+            time.sleep(16)
+            r = api('POST', f'/api/devices/{mv}/command', {'command': 'key', 'args': {'key': 'home'}}, timeout=150)
+            check('dhcp: a command after a move finds the box and succeeds', r.get('ok') is not False and api('GET', f'/api/devices/{mv}')['ip'] == '10.99.0.42', json.dumps(r)[:300])
+        except Exception as e:
+            check('section dhcp moves completed', False, str(e)[:300])
+        finally:
+            while movers:
+                try: unplug()
+                except Exception: pass
+            try: api('DELETE', f'/api/devices/{mv}')  # don't leave an unreachable box for later sections
+            except Exception: pass
         print('== automations')
         try:
             a = api('POST', '/api/automations', {'name': 'E2E: home key', 'scope_type': 'site', 'scope_id': sid, 'trigger': {'type': 'schedule', 'cron': '0 3 * * *'}, 'target': {'kinds': ['android']}, 'actions': [{'type': 'command', 'command': 'key', 'args': {'key': 'HOME'}}]})

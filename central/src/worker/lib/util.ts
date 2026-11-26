@@ -82,3 +82,13 @@ export function randomDotLabel(): string {
   return s;
 }
 export const isDotLabel = (l: string) => /^[a-z2-7]{16}$/.test(l);
+
+/** Network address of a CIDR ("10.10.50.169/24" → "10.10.50.0/24"). */
+export function networkOf(cidr: string): string {
+  const [ip, bitsRaw] = cidr.split('/');
+  const bits = Number(bitsRaw);
+  const n = ip.split('.').reduce((a, o) => (a << 8) + Number(o), 0) >>> 0;
+  const m = bits === 0 ? 0 : (~0 << (32 - bits)) >>> 0;
+  const net = (n & m) >>> 0;
+  return `${[24, 16, 8, 0].map((sh) => (net >>> sh) & 255).join('.')}/${bits}`;
+}

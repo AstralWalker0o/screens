@@ -6,7 +6,7 @@ import type {
 import { adapterFor, DISCOVERY_MDNS, DISCOVERY_PORTS, fingerprint, parseSonosDescription, probeTarget, type RawHost } from '../adapters';
 import type { AdapterCtx } from '../adapters/types';
 import { AdapterError, xmlTag } from '../adapters/types';
-import { htmlUnescape } from '../adapters/samsung';
+import { dropSamsungSession, htmlUnescape } from '../adapters/samsung';
 import { fetchArt as fetchSonosArt, siteOverview as sonosSiteOverview } from '../adapters/sonos';
 import type { SonosSiteOverview } from '../../shared/sonos';
 import { classify, compilePolicies, refreshLists } from '../dns/compile';
@@ -17,7 +17,7 @@ import { b64Decode, b64Encode, openJson, sealJson, signAgentUrl } from '../lib/c
 import {
   audit, createJob, finishJob, getAppSettings, kioskPinHash, raiseAlert, resolveAlert, type Row, siteMdns, siteNetwork, siteSettings, toAutomation, toDevice, toDiscovered,
 } from '../lib/db';
-import { chunk, dayKey, hourKey, HttpError, isDotLabel, isPrivateIPv4, normMac, now, parseJson, randomDotLabel, rid, sleep } from '../lib/util';
+import { chunk, dayKey, hourKey, HttpError, ipInCidr, isDotLabel, isPrivateIPv4, networkOf, normMac, now, parseJson, randomDotLabel, rid, sleep } from '../lib/util';
 import { scoreDevice } from '../privacy/score';
 import { seed } from '../lib/seed';
 import { RelayStream } from './stream';
@@ -29,6 +29,9 @@ const TICK_MS = 60_000;
 const QUIET_COMMANDS = new Set(['key', 'text', 'tap', 'volume', 'mute', 'media', 'screenshot', 'refresh', 'apps', 'topology', 'mic_usage', 'launcher_status', 'welcome_show']);
 const JOB_COMMANDS = new Set(['install', 'uninstall', 'guest_reset', 'reboot', 'private_dns', 'shell', 'clear', 'disable', 'enable', 'restore', 'launcher_install', 'launcher_config', 'launcher_remove', 'debloat', 'revoke_permission', 'grant_permission']);
 const OFFLINE_AFTER_FAILS = 3;
+/** Errors that mean "nothing answered at that address" (the device may have a new DHCP lease). */
+const MOVE_CODES = new Set(['unreachable', 'timeout', 'adb_offline', 'closed', 'offline']);
+
 /** Gateway ops that are slow by design (not reported as "slow" in diag_log). */
 const SLOW_BY_DESIGN = new Set(['adb.push', 'adb.install', 'net.scan', 'net.mdns_browse', 'net.ssdp_search', 'net.discover', 'tls.csr', 'update.apply', 'adb.pair']);
 
@@ -271,7 +274,8 @@ export class SiteHub extends DurableObject<Env> {
       config: { dns, mdns, ...(net ? { net } : {}), telemetry: { dns_batch_ms: 5000, metrics_ms: 60000, neighbors_ms: 300000 } },
     }));
     this.setKv('offline_since', null);
-    this.setKv('dns_refresh', true); // re-read DNS listener state once the welcome config has been applied
+    this.setKv('dns_refresh', true);
+    this.ctx.waitUntil(this.refreshDotRecord().catch(() => undefined)); // the gateway itself may have a new DHCP address // re-read DNS listener state once the welcome config has been applied
     await resolveAlert(this.env, `gw_offline:${this.siteId}`);
     this.broadcast({ type: 'gateway', status: 'online', gateway: { hostname: h.hostname, version: h.version } });
     this.ctx.waitUntil(this.fireEvent('gateway.online', {}));
@@ -385,6 +389,9 @@ export class SiteHub extends DurableObject<Env> {
 
   private async ingestDns(entries: any[]) {
     if (!entries.length) return;
+    // Lookups from addresses no device is known on: maybe a known device on a new DHCP lease.
+    const unknown = [...new Set(entries.filter((e) => !e.device_id && e.client && isPrivateIPv4(String(e.client))).map((e) => String(e.client)))];
+    if (unknown.length) this.ctx.waitUntil(this.matchUnknownClients(unknown).catch(() => undefined));
     const names = await this.deviceNames();
     const acrSeen = new Set<string>();
     const out: DnsLogEntry[] = [];
@@ -424,20 +431,187 @@ export class SiteHub extends DurableObject<Env> {
   private async reconcileNeighbors(entries: { ip: string; mac: string }[]) {
     this.setKv('neighbors', entries.slice(0, 1024));
     const devices = (await this.env.DB.prepare('SELECT id, ip, mac FROM devices WHERE site_id = ?').bind(this.siteId).all<Row>()).results;
-    const byMac = new Map(entries.map((e) => [normMac(e.mac), e.ip]));
+    const ipsByMac = new Map<string, string[]>();
+    for (const e of entries) {
+      const m = normMac(e.mac);
+      if (m && isPrivateIPv4(e.ip)) ipsByMac.set(m, [...(ipsByMac.get(m) ?? []), e.ip]);
+    }
     const byIp = new Map(entries.map((e) => [e.ip, normMac(e.mac)]));
-    let changed = false;
     for (const d of devices) {
       const mac = normMac(d.mac);
-      if (mac && byMac.has(mac) && byMac.get(mac) !== d.ip) {
-        // DHCP moved this device: follow it by MAC so DNS attribution and control keep working.
-        await this.env.DB.prepare('UPDATE devices SET ip = ?, updated_at = ? WHERE id = ?').bind(byMac.get(mac), now(), d.id).run();
-        changed = true;
+      const ips = mac ? ipsByMac.get(mac) : undefined;
+      if (ips && d.ip && !ips.includes(d.ip)) {
+        // DHCP moved this device: prove it's the same device at the new address before following it.
+        this.ctx.waitUntil(this.verifyMove(d.id as string, ips, 'neighbor table').catch(() => undefined));
       } else if (!mac && d.ip && byIp.get(d.ip)) {
         await this.env.DB.prepare('UPDATE devices SET mac = ?, updated_at = ? WHERE id = ?').bind(byIp.get(d.ip), now(), d.id).run();
       }
     }
-    if (changed) await this.pushDnsConfig().catch(() => undefined);
+  }
+
+  // ---------------------------------------------------------------- following devices that change IP (DHCP)
+  /**
+   * Is the device at `ip` the same physical device as `row`? true / false, or null when this kind can't tell
+   * (then only an unambiguous MAC match may move it). Shields prove it with their serial number, Samsung TVs
+   * with their device id, Sonos with their RINCON id.
+   */
+  private async identityAt(row: Row, ip: string): Promise<boolean | null> {
+    const facts = parseJson<any>(row.facts, {});
+    try {
+      switch (row.kind) {
+        case 'android': {
+          const serial = `${ip}:${row.port || 5555}`;
+          const c = await this.gwRaw<{ state: string }>('adb.connect', { serial }, 15_000);
+          if (c.state !== 'device') return false; // our adb key is authorised per key, not per IP: same box stays authorised
+          const r = await this.gwRaw<{ stdout: string }>('adb.shell', { serial, cmd: 'getprop ro.serialno', timeout_ms: 8_000 }, 13_000);
+          const sn = r.stdout.trim();
+          if (row.serial) return sn === row.serial;
+          return sn ? null : false;
+        }
+        case 'samsung': {
+          const r = await this.gwRaw<{ status: number; body?: string }>('http.request', { url: `http://${ip}:8001/api/v2/`, timeout_ms: 4_000 }, 8_000);
+          if (r.status !== 200 || !r.body) return false;
+          const j = JSON.parse(r.body); const d = j.device ?? {};
+          const id = String(j.id ?? d.duid ?? d.id ?? '');
+          if (facts.uuid && id) return id === facts.uuid;
+          if (facts.model_code && d.model && d.model !== facts.model_code) return false;
+          return null;
+        }
+        case 'sonos': {
+          const r = await this.gwRaw<{ status: number; body?: string }>('http.request', { url: `http://${ip}:1400/xml/device_description.xml`, timeout_ms: 4_000 }, 8_000);
+          if (r.status !== 200 || !r.body) return false;
+          const udn = (xmlTag(r.body, 'UDN') ?? '').replace(/^uuid:/, '');
+          return facts.uuid ? udn === facts.uuid : null;
+        }
+        default:
+          return null;
+      }
+    } catch {
+      return false;
+    }
+  }
+
+  /** Check candidate addresses for a device and follow it to the first one that proves to be the same device. */
+  private async verifyMove(id: string, candidates: string[], why: string, mode: 'background' | 'interactive' = 'background', strict = false): Promise<string | null> {
+    const key = `verify:${id}`;
+    if (now() - this.kv<number>(key, 0) < (mode === 'interactive' ? 10_000 : 120_000)) return null;
+    this.setKv(key, now());
+    const row = await this.deviceRow(id);
+    const ips = [...new Set(candidates)].filter((ip) => ip !== row.ip && isPrivateIPv4(ip)).slice(0, 24);
+    if (!ips.length) return null;
+    // A MAC shared by several addresses or devices (Wi-Fi extenders in MAC-NAT mode, bridges, the test LAN)
+    // proves nothing: then the device must positively identify itself.
+    const mac = normMac(row.mac);
+    const sameMac = mac ? (await this.env.DB.prepare('SELECT count(*) n FROM devices WHERE site_id = ? AND mac = ?').bind(this.siteId, mac).first<Row>())?.n ?? 0 : 0;
+    const ambiguous = strict || ips.length > 1 || Number(sameMac) > 1 || !mac;
+    for (const ip of ips) {
+      const same = await this.identityAt(row, ip);
+      if (same === true || (same === null && !ambiguous)) {
+        await this.moveDevice(row, ip, same ? 'identity verified' : 'MAC address', why);
+        return ip;
+      }
+    }
+    return null;
+  }
+
+  /**
+   * Re-find a device that stopped answering at its last IP. Sonos asks the other speakers; everything else is
+   * found by MAC in the gateway's neighbor table, after an ARP sweep of its subnet if needed. Rate-limited.
+   */
+  async locateDevice(id: string, why: string, mode: 'background' | 'interactive' = 'background'): Promise<string | null> {
+    if (!this.online) return null;
+    const key = `locate:${id}`;
+    if (now() - this.kv<number>(key, 0) < (mode === 'interactive' ? 15_000 : 10 * 60_000)) return null;
+    this.setKv(key, now());
+    const row = await this.deviceRow(id);
+    if (row.kind === 'sonos') {
+      const ip = await this.sonosAddressOf(row).catch(() => null);
+      if (ip && ip !== row.ip) { await this.moveDevice(row, ip, 'Sonos topology', why); return ip; }
+    }
+    const mac = normMac(row.mac);
+    const lookup = async () => (mac ? ((await this.gwRaw<{ entries: { ip: string; mac: string }[] }>('net.neighbors', {}, 10_000)).entries ?? []) : [])
+      .filter((e) => normMac(e.mac) === mac && e.ip !== row.ip && isPrivateIPv4(e.ip)).map((e) => e.ip);
+    let cands = await lookup().catch(() => [] as string[]);
+    let byPort: string[] = [];
+    const sweepKey = `sweep:${id}`;
+    if (!cands.length && now() - this.kv<number>(sweepKey, 0) > (mode === 'interactive' ? 60_000 : 30 * 60_000)) {
+      this.setKv(sweepKey, now());
+      // Touch every address on the device's last subnet (its control port) so the gateway learns who is where
+      // (ARP), then look again by MAC. Hosts with that port open are fallback candidates that must prove identity.
+      const subnets = [...new Set((await this.gatewayAddrs()).filter((c) => Number(c.split('/')[1]) >= 22).map(networkOf))];
+      const targets = subnets.filter((c) => row.ip && ipInCidr(row.ip, c));
+      const port = row.kind === 'android' ? Number(row.port || 5555) : row.kind === 'samsung' ? 8001 : row.kind === 'sonos' ? 1400 : row.kind === 'lg' ? 3000 : 80;
+      if (targets.length || subnets.length) {
+        const res = await this.gwRaw<{ hosts?: { ip: string; open_ports?: number[] }[] }>('net.scan', { cidrs: targets.length ? targets : subnets, ports: [port], timeout_ms: 300 }, 60_000).catch(() => null);
+        cands = await lookup().catch(() => [] as string[]);
+        byPort = (res?.hosts ?? []).filter((h) => h.ip !== row.ip && (h.open_ports ?? []).includes(port)).map((h) => h.ip);
+      }
+    }
+    let ip = cands.length ? await this.verifyMove(id, cands, why, mode) : null;
+    // No MAC match (or no MAC known yet): only an address that positively identifies as this device will do.
+    if (!ip && byPort.length && row.kind !== 'lg' && row.kind !== 'other') {
+      this.setKv(`verify:${id}`, 0);
+      ip = await this.verifyMove(id, byPort, `${why}, port sweep`, mode, true);
+    }
+    if (!ip) this.diag('info', 'locate', `${row.name}: not found on the network (${why})`, { device_id: id, mac, last_ip: row.ip, candidates: cands, by_port: byPort.slice(0, 20) });
+    return ip;
+  }
+
+  /** Learn a device's MAC from the gateway's neighbor table while it answers, so it can be followed if its IP changes. */
+  private async learnMac(row: Row) {
+    if (row.mac || !row.ip || now() - this.kv<number>('learn_mac_at', 0) < 60_000) return;
+    this.setKv('learn_mac_at', now());
+    const entries = ((await this.gwRaw<{ entries: { ip: string; mac: string }[] }>('net.neighbors', {}, 10_000)).entries ?? []);
+    const mac = normMac(entries.find((e) => e.ip === row.ip)?.mac);
+    if (mac) await this.updateDevice(row, { mac });
+  }
+
+  /** Where another Sonos speaker says this one is (any speaker knows the whole household's addresses). */
+  private async sonosAddressOf(row: Row): Promise<string | null> {
+    const uuid = parseJson<any>(row.facts, {}).uuid;
+    if (!uuid) return null;
+    const others = (await this.env.DB.prepare("SELECT * FROM devices WHERE site_id = ? AND kind = 'sonos' AND id != ? AND status != 'offline'").bind(this.siteId, row.id).all<Row>()).results;
+    for (const o of others.slice(0, 3)) {
+      try {
+        const members = await adapterFor('sonos').command(this.makeCtx(o), 'topology', {}) as { uuid: string; ip: string | null }[];
+        const m = members.find((x) => x.uuid === uuid);
+        if (m?.ip) return m.ip;
+      } catch { /* try the next speaker */ }
+    }
+    return null;
+  }
+
+  /** Follow a device to its new IP: update the record, history, DNS attribution, stale connections and the audit log. */
+  private async moveDevice(row: Row, ip: string, how: string, why: string) {
+    const old = (row.ip as string | null) ?? null;
+    if (ip === old || !isPrivateIPv4(ip)) return;
+    const facts = parseJson<any>(row.facts, {});
+    const history = [{ ip, from: old, at: now(), via: how }, ...((facts.ip_history ?? []) as unknown[])].slice(0, 10);
+    await this.updateDevice(row, { ip, facts: { ip_history: history } });
+    if (row.kind === 'android' && old) this.ctx.waitUntil(this.gwRaw('adb.disconnect', { serial: `${old}:${row.port || 5555}` }, 10_000).catch(() => undefined));
+    if (row.kind === 'samsung') dropSamsungSession(row.id);
+    // Another device still recorded on this address has moved too: have it looked for.
+    const clash = (await this.env.DB.prepare('SELECT id FROM devices WHERE site_id = ? AND ip = ? AND id != ?').bind(this.siteId, ip, row.id).all<Row>()).results;
+    for (const c of clash) this.ctx.waitUntil(this.locateDevice(c.id as string, `address taken by ${row.name}`).catch(() => null));
+    this.names = null;
+    this.diag('info', 'locate', `${row.name} moved ${old ?? '?'} → ${ip} (${how}; ${why})`, { device_id: row.id });
+    await audit(this.env, 'system', 'device.moved', { target_type: 'device', target_id: row.id, site_id: this.siteId, details: { from: old, to: ip, via: how, trigger: why } });
+    this.broadcast({ type: 'device', device: { id: row.id, ip } });
+    this.ctx.waitUntil(this.pushDnsConfig().catch(() => false));
+  }
+
+  /** DNS lookups from an address no device is known on: probably a known device that just got a new lease. */
+  private async matchUnknownClients(ips: string[]) {
+    if (!ips.length || now() - this.kv<number>('unknown_match_at', 0) < 60_000) return;
+    this.setKv('unknown_match_at', now());
+    const entries = ((await this.gwRaw<{ entries: { ip: string; mac: string }[] }>('net.neighbors', {}, 10_000)).entries ?? []);
+    const macOf = new Map(entries.map((e) => [e.ip, normMac(e.mac)]));
+    const devices = (await this.env.DB.prepare('SELECT id, ip, mac FROM devices WHERE site_id = ? AND mac IS NOT NULL').bind(this.siteId).all<Row>()).results;
+    for (const ip of ips.slice(0, 8)) {
+      const mac = macOf.get(ip);
+      const d = mac ? devices.find((x) => normMac(x.mac) === mac && x.ip !== ip) : undefined;
+      if (d) await this.verifyMove(d.id as string, [ip], 'DNS from a new address').catch(() => null);
+    }
   }
 
   // ---------------------------------------------------------------- devices
@@ -489,14 +663,36 @@ export class SiteHub extends DurableObject<Env> {
 
   async refreshDevice(id: string): Promise<Device> {
     const row = await this.deviceRow(id);
-    const fields = await adapterFor(row.kind).refresh(this.makeCtx(row));
-    if (fields.status === 'online' || fields.status === 'standby') fields.last_seen = now();
+    let fields: Record<string, any>;
+    try {
+      fields = await adapterFor(row.kind).refresh(this.makeCtx(row));
+    } catch (e: any) {
+      if (MOVE_CODES.has(e?.code)) this.ctx.waitUntil(this.locateDevice(id, 'refresh failed').then((ip) => (ip ? this.refreshDevice(id) : null)).catch(() => null));
+      throw e;
+    }
+    if (fields.status === 'online' || fields.status === 'standby') {
+      fields.last_seen = now();
+      if (!row.mac) this.ctx.waitUntil(this.learnMac(row).catch(() => undefined));
+    } else if (fields.status === 'offline' && row.ip) {
+      // Not answering at its last address: it may have a new DHCP lease. Look for it (rate-limited) and re-read it there.
+      this.ctx.waitUntil(this.locateDevice(id, 'not answering').then((ip) => (ip ? this.refreshDevice(id) : null)).catch(() => null));
+    }
+    if (row.kind === 'sonos' && Array.isArray(fields.facts?.zones)) this.ctx.waitUntil(this.followSonosZones(fields.facts.zones).catch(() => undefined));
     await this.updateDevice(row, fields);
     if (row.kind === 'android' && fields.status === 'online') this.names = null;
     return toDevice(row);
   }
 
-  async command(deviceId: string, command: string, args: Record<string, any>, actor: string): Promise<any> {
+  /** A Sonos speaker lists every speaker's address: follow any adopted speaker whose IP changed. */
+  private async followSonosZones(zones: { uuid: string; ip: string | null }[]) {
+    const rows = (await this.env.DB.prepare("SELECT * FROM devices WHERE site_id = ? AND kind = 'sonos'").bind(this.siteId).all<Row>()).results;
+    for (const r of rows) {
+      const z = zones.find((x) => x.uuid && x.uuid === parseJson<any>(r.facts, {}).uuid);
+      if (z?.ip && z.ip !== r.ip) await this.moveDevice(r, z.ip, 'Sonos topology', 'speaker refresh');
+    }
+  }
+
+  async command(deviceId: string, command: string, args: Record<string, any>, actor: string, retried = false): Promise<any> {
     const row = await this.deviceRow(deviceId);
     const ctx = this.makeCtx(row);
     const adapter = adapterFor(row.kind);
@@ -540,6 +736,11 @@ export class SiteHub extends DurableObject<Env> {
       if (jobId) await finishJob(this.env, jobId, 'error', { error: e.message, code: e.code });
       // Quiet commands (media, volume…) aren't audited: keep the last failure on the device so operators can see it.
       if (!STATUS_READS.has(command)) await this.updateDevice(row, { facts: { last_error: { command, message: String(e?.message ?? e).slice(0, 500), code: e?.code ?? 'error', at: now() } } }).catch(() => undefined);
+      // The device may have a new DHCP address: find it and try once more there.
+      if (!retried && MOVE_CODES.has(e?.code) && !['pair', 'adb_pair'].includes(command)) {
+        const ip = await this.locateDevice(deviceId, `"${command}" failed`, 'interactive').catch(() => null);
+        if (ip) return this.command(deviceId, command, args, actor, true);
+      }
       if (e.code === 'adb_unauthorized' || e.code === 'unauthorized') await this.updateDevice(row, { status: 'unauthorized' });
       if (e.code === 'pairing') await this.updateDevice(row, { status: 'pairing' });
       throw e;
@@ -654,6 +855,9 @@ export class SiteHub extends DurableObject<Env> {
         }
       } catch { /* keep the first-pass guess */ }
       const adopted = devices.find((d) => d.ip === h.ip || (h.mac && normMac(d.mac) === normMac(h.mac)));
+      if (adopted && adopted.ip !== h.ip && h.mac && normMac(adopted.mac) === normMac(h.mac)) {
+        this.ctx.waitUntil(this.verifyMove(adopted.id as string, [h.ip], 'discovery scan').catch(() => null));
+      }
       const hints = { ports: h.ports, mdns: [...new Set(h.mdns.map((m) => m.service))], ssdp: [...new Set(h.ssdp.map((s) => s.server).filter(Boolean))] as string[], ...(adbTlsPort.has(h.ip) ? { adb_port: adbTlsPort.get(h.ip) } : {}) };
       await this.env.DB.prepare(`INSERT INTO discovered (site_id, ip, mac, kind_guess, name, model, manufacturer, hints, first_seen, last_seen) VALUES (?,?,?,?,?,?,?,?,?,?)
         ON CONFLICT(site_id, ip) DO UPDATE SET mac = COALESCE(excluded.mac, mac), kind_guess = excluded.kind_guess, name = COALESCE(excluded.name, name), model = COALESCE(excluded.model, model),

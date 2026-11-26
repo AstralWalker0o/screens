@@ -17,6 +17,19 @@ export interface Release {
 
 export const RELEASES: Release[] = [
   {
+    version: '0.5.3',
+    date: '2026-11-26',
+    title: 'No fixed IPs needed',
+    summary: 'TVs, boxes and speakers can keep getting addresses from DHCP: Screens follows them when their address changes.',
+    components: { gateway: '0.3.0', launcher: '1.0.0' },
+    notes: [
+      { kind: 'new', text: 'When a device gets a new address from DHCP, Screens finds it again by its network card (MAC). If that isn\'t enough, it looks around the subnet and accepts the new address only if the device proves it\'s the same one: a Shield by its serial number, a Samsung by its ID, a Sonos by its speaker ID.' },
+      { kind: 'improved', text: 'If a button press fails because a device moved, Screens finds it and retries straight away. Devices that go quiet are looked for automatically, and Sonos speakers report each other\'s new addresses.' },
+      { kind: 'improved', text: 'Each device\'s Network tab shows its current address, network card and address history. Every move is written to the activity log.' },
+      { kind: 'security', text: 'Wi-Fi extenders that share one MAC between devices can\'t make Screens swap two devices: an ambiguous match must be confirmed by the device\'s identity.' },
+    ],
+  },
+  {
     version: '0.5.2',
     date: '2026-11-26',
     title: 'Live view on request',

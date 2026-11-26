@@ -40,6 +40,11 @@ async function deviceInfo(ctx: AdapterCtx): Promise<any | null> {
 
 /** Per-isolate cache of open remote-control sessions, keyed by device id. */
 const sessions = new Map<string, { stream: HubStream; at: number }>();
+/** Forget a cached remote-control session (the TV moved to a new IP). */
+export function dropSamsungSession(deviceId: string) {
+  sessions.get(deviceId)?.stream.close();
+  sessions.delete(deviceId);
+}
 
 const MENU = 'Settings → All Settings → Connection → External Device Manager → Device Connection Manager (older TVs: Settings → General → External Device Manager → Device Connection Manager)';
 export const SAMSUNG_HELP = {
@@ -152,6 +157,7 @@ export const samsung: Adapter = {
         resolution: d.resolution ?? null, network_type: d.networkType ?? null, tv_name: htmlUnescape(d.name ?? info.name ?? null),
         model_code: d.model ?? null, voice_support: d.VoiceSupport ?? null, developer_mode: d.developerMode ?? null,
         wifi_mac: d.wifiMac ?? null, // the TV reports its Wi-Fi MAC even when wired; WoL uses the ARP-learned MAC
+        uuid: (info.id ?? d.duid ?? d.id ?? null) || null, // stable identity, used to re-find the TV after a DHCP move
       },
     };
   },

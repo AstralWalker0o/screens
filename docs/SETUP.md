@@ -38,6 +38,13 @@ automatically.
 Give the gateway a **DHCP reservation (fixed IP) on the IoT VLAN**, because
 the TVs will use that address as their DNS server.
 
+**TVs, boxes and speakers don't need fixed IPs.** Screens follows a device when
+DHCP gives it a new address. It matches the device's MAC, sweeps the subnet if
+needed, and checks the device's identity (Shield serial number, Samsung ID,
+Sonos speaker ID). The **gateway** is the one address worth keeping stable,
+because devices use it as their DNS server. Android Private DNS uses a
+hostname, which Screens keeps pointed at the gateway automatically.
+
 ## 2. Install the gateway
 
 1. In Screens: **Sites → (your site) → Gateway → Add gateway**.

@@ -1,5 +1,5 @@
 import { useEffect, useState } from 'react';
-import { Save, ShieldCheck, Radio, Ban, Check } from 'lucide-react';
+import { Save, ShieldCheck, Radio, Ban, Check, Network } from 'lucide-react';
 import type { Device, DnsMode, DnsPolicyName } from '../../../shared/types';
 import { api } from '../../api';
 import { act, setQueryData, useQuery } from '../../lib/query';
@@ -29,7 +29,37 @@ export function NetworkTab({ device: d }: { device: Device }) {
           <DnsLiveLog siteId={d.site_id} deviceId={d.id} height={460} onDeviceListChange={(nd) => setQueryData(`device:${d.id}`, () => nd)} />
         </CardBody>
       </Card>
+      <AddressCard device={d} />
     </div>
+  );
+}
+
+interface IpMove { ip: string; from: string | null; at: number; via: string }
+
+/** Devices are on DHCP: Screens follows them by MAC and identity when their address changes. */
+function AddressCard({ device: d }: { device: Device }) {
+  const history = ((d.facts as Record<string, unknown>).ip_history as IpMove[] | undefined) ?? [];
+  return (
+    <Card>
+      <CardHeader title="Network address" icon={Network} subtitle="No fixed IP needed. When this device gets a new address from DHCP, Screens finds it again (by its network card and identity) and follows it." />
+      <CardBody>
+        <dl className="grid gap-x-8 gap-y-2 text-sm sm:grid-cols-3">
+          <div><dt className="text-xs text-muted">Current address</dt><dd className="font-mono text-[13px] text-fg">{d.ip ?? '–'}</dd></div>
+          <div><dt className="text-xs text-muted">Network card (MAC)</dt><dd className="font-mono text-[13px] text-fg">{d.mac ?? 'Not learned yet'}</dd></div>
+          <div><dt className="text-xs text-muted">Last change</dt><dd className="text-fg">{history[0] ? fmtDate(history[0].at) : 'Never'}</dd></div>
+        </dl>
+        {history.length > 0 && (
+          <ul className="mt-4 divide-y divide-line rounded-lg border border-line text-sm">
+            {history.map((h) => (
+              <li key={`${h.at}-${h.ip}`} className="flex flex-wrap items-center justify-between gap-2 px-3 py-2">
+                <span className="font-mono text-[13px] text-fg">{h.from ?? '?'} → {h.ip}</span>
+                <span className="text-xs text-muted">{fmtDate(h.at)} · found by {h.via}</span>
+              </li>
+            ))}
+          </ul>
+        )}
+      </CardBody>
+    </Card>
   );
 }
 

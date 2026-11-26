@@ -373,6 +373,8 @@ class FakeAndroid:
         """Very small emulation of the commands the Screens Android driver sends."""
         out = []
         third = [p for p, v in self.packages.items() if v[0].startswith('/data/')]
+        if cmd.strip() == 'getprop ro.serialno':  # identity check after a DHCP move
+            return f'SIM{self.n:04d}\n'.encode()
         if '@@manufacturer' in cmd:
             out += ['@@manufacturer=NVIDIA', f'@@model=SHIELD Android TV', '@@release=11', '@@sdk=30', f'@@serial=SIM{self.n:04d}', '@@build=SR1.230125.001', f'@@device_name=Shield {self.n}',
                     '@@wm=Physical size: 1920x1080 ', f'@@wake=mWakefulness={"Awake" if self.awake else "Asleep"}', '@@resumed=  mResumedActivity: ActivityRecord{1a2b u0 com.netflix.ninja/.MainActivity t42}',
@@ -606,6 +608,7 @@ def main():
     ap = argparse.ArgumentParser()
     ap.add_argument('--samsung', default=''); ap.add_argument('--sonos', default=''); ap.add_argument('--android', default='')
     ap.add_argument('--samsung9', default='', help='Tizen 9 behaviour (register frame)'); ap.add_argument('--samsung-deny', default='', help='Access Notification off')
+    ap.add_argument('--android-base', type=int, default=0, help='serial offset (SIM<base+n>), e.g. to replay one box on a new IP')
     a = ap.parse_args()
     tmp = tempfile.mkdtemp()
     cert, key = os.path.join(tmp, 'c.pem'), os.path.join(tmp, 'k.pem')
@@ -614,7 +617,7 @@ def main():
     for ip in filter(None, a.samsung9.split(',')): samsung(ip, cert, key, 'tizen9')
     for ip in filter(None, a.samsung_deny.split(',')): samsung(ip, cert, key, 'deny')
     if a.sonos: sonos([x for x in a.sonos.split(',') if x])
-    for i, ip in enumerate(filter(None, a.android.split(','))): adbd(ip, FakeAndroid(ip, i + 1))
+    for i, ip in enumerate(filter(None, a.android.split(','))): adbd(ip, FakeAndroid(ip, a.android_base + i + 1))
     print('simulators running', flush=True)
     while True: time.sleep(3600)
 
