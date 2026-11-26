@@ -100,6 +100,14 @@ The cloud pushes the scrcpy server (checksum-verified) to an Android box and sta
 and fans them out to each viewer's browser, which decodes them with WebCodecs. Viewer input goes back as
 allow-listed scrcpy control messages. See [MIRROR.md](MIRROR.md).
 
+## App updates
+
+Sideloaded Android apps (library uploads, GitHub releases, the Screens Launcher) are kept current per
+package policy (auto in the site's maintenance window / notify / pin). Each site hub updates one
+canary box first, verifies the new version and that the app opens, then the rest, one box at a time.
+Signing keys are checked against the installed app, nothing is ever downgraded or uninstalled, and
+apps from Google Play are left to Play. See [UPDATES.md](UPDATES.md).
+
 ## mDNS / SSDP reflector
 
 You configure it per site: pick interfaces and add rules

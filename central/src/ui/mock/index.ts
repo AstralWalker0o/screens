@@ -17,6 +17,7 @@ import type { MirrorConnection, MirrorHandlers, MirrorParams } from '../api';
 import { between, hex } from './rand';
 import { sonosMock, sonosOverview } from './sonos';
 import { launcherMock } from './launcher';
+import { registerUpdates } from './updates';
 
 const clone = <T,>(v: T): T => (v === undefined ? v : structuredClone(v));
 const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
@@ -998,6 +999,7 @@ on('PUT', '/api/settings', async (c) => {
 
 // Screens Launcher v2: home-screen layouts, pictures and rollout (./launcher).
 const launcher = launcherMock(on, db);
+registerUpdates(on, db);
 
 export async function handle(method: string, path: string, body?: unknown): Promise<unknown> {
   const u = new URL(path, 'http://mock');

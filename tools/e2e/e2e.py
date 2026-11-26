@@ -8,7 +8,9 @@ Prereqs (see README):
   - gateway binary built (gateway/dist/screens-gateway-linux-amd64)
 Run as root (DNS port 53, raw multicast).
 """
-import hashlib, json, os, random, shutil, signal, socket, struct, subprocess, sys, tempfile, time, urllib.error, urllib.parse, urllib.request
+import hashlib, http.server, json, os, random, shutil, signal, socket, struct, subprocess, sys, tempfile, threading, time, urllib.error, urllib.parse, urllib.request
+from datetime import datetime, timedelta
+from zoneinfo import ZoneInfo
 
 BASE = os.environ.get('CENTRAL', 'http://127.0.0.1:8787')
 ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), '..', '..'))
@@ -149,6 +151,52 @@ def ws_client(path):
         except Exception: pass
         sock.close()
     return recv, send, close
+
+# --------------------------------------------------------------------------- app updates: a stand-in for GitHub
+# central/wrangler.e2e.jsonc points GITHUB_API_BASE here, so update sources never touch the real GitHub in tests.
+GH_PORT = 8791
+UPD_FIX = os.path.join(ROOT, 'central', 'test', 'fixtures', 'updates')
+GH = {'release': None, 'if_none_match': [], 'hits': []}
+
+def fx(name):
+    with open(os.path.join(UPD_FIX, name), 'rb') as f: return f.read()
+
+def sha256(b): return hashlib.sha256(b).hexdigest()
+
+class FakeGitHub(http.server.BaseHTTPRequestHandler):
+    def log_message(self, *a): pass
+    def do_GET(self):
+        GH['hits'].append(self.path)
+        rel = GH['release']
+        if self.path == '/repos/acme/fixture/releases/latest':
+            if not rel: return self.send_error(404)
+            etag = f'"{rel["tag"]}"'
+            GH['if_none_match'].append(self.headers.get('If-None-Match'))
+            if self.headers.get('If-None-Match') == etag:
+                self.send_response(304); self.end_headers(); return
+            body = json.dumps({'id': 1, 'tag_name': rel['tag'], 'draft': False, 'prerelease': False, 'published_at': '2026-11-20T00:00:00Z', 'assets': [
+                {'id': i, 'name': n, 'size': len(fx(f)) if f else 64, 'state': 'uploaded', 'browser_download_url': f'http://127.0.0.1:{GH_PORT}/dl/{i}'} for i, n, f in rel['assets']]}).encode()
+            self.send_response(200); self.send_header('content-type', 'application/json'); self.send_header('etag', etag)
+            self.send_header('content-length', str(len(body))); self.end_headers(); self.wfile.write(body); return
+        if self.path.startswith('/dl/'):  # like github.com → objects.githubusercontent.com
+            self.send_response(302); self.send_header('location', '/obj/' + self.path[4:]); self.end_headers(); return
+        if self.path.startswith('/obj/') and rel:
+            f = next((f for i, n, f in rel['assets'] if str(i) == self.path[5:]), None)
+            b = fx(f) if f else b'0' * 64
+            self.send_response(200); self.send_header('content-type', 'application/octet-stream'); self.send_header('content-length', str(len(b)))
+            self.end_headers(); self.wfile.write(b); return
+        self.send_error(404)
+
+def start_fake_github():
+    srv = http.server.ThreadingHTTPServer(('127.0.0.1', GH_PORT), FakeGitHub)
+    threading.Thread(target=srv.serve_forever, daemon=True).start()
+    return srv
+
+def upload_apk(data, filename):
+    boundary = '----screensupd'
+    body = (f'--{boundary}\r\nContent-Disposition: form-data; name="file"; filename="{filename}"\r\nContent-Type: application/vnd.android.package-archive\r\n\r\n').encode() + data + f'\r\n--{boundary}--\r\n'.encode()
+    req = urllib.request.Request(BASE + '/api/apks', method='POST', data=body, headers={'content-type': f'multipart/form-data; boundary={boundary}'})
+    return json.loads(opener.open(req, timeout=30).read())
 
 def main():
     print('== setup')
@@ -379,6 +427,81 @@ def main():
             api('DELETE', f'/api/apks/{apk1["id"]}')
         except Exception as e:
             check('section screens launcher v2 completed', False, str(e)[:300])
+        print('== app updates')
+        try:
+            gh_srv = start_fake_github()
+            PKG = 'au.supercluster.screens.fixture'
+            exp = json.load(open(os.path.join(UPD_FIX, 'expected.json')))
+            def updates(): return api('GET', '/api/updates')
+            def box(pkg, o=None):
+                p = next((x for x in (o or updates())['packages'] if x['package'] == pkg), None)
+                return next((b for b in (p or {}).get('boxes', []) if b['device_id'] == sh), None)
+            # The owner sideloaded v1 (signed with key 1) from the library at some point.
+            v1 = upload_apk(fx('v1-k1.apk'), 'fixture-1.0.apk')
+            check('updates: library reads package + version from the APK', v1['package'] == PKG and v1['version_code'] == 1, json.dumps(v1))
+            r = api('POST', f'/api/devices/{sh}/command', {'command': 'install', 'args': {'apk_id': v1['id']}}, timeout=180)
+            check('updates: v1 sideloaded', r['ok'], json.dumps(r)[:300])
+            api('POST', f'/api/devices/{sh}/command', {'command': 'apps'}, timeout=180)
+            api('POST', '/api/updates/probe', {'site_id': sid})
+            ok = wait(lambda: (box('com.netflix.ninja') or {}).get('state') == 'store', 120, 3)
+            check('updates: Play-installed app shown as kept current by Play', ok, json.dumps(box('com.netflix.ninja')))
+
+            # A build signed with a different key is flagged and never installed.
+            k2 = upload_apk(fx('v2-k2.apk'), 'fixture-1.1-otherkey.apk')
+            st = wait(lambda: (box(PKG) or {}).get('state') == 'signer_mismatch', 60, 2)
+            check('updates: build with another signing key flagged', st, json.dumps(box(PKG))[:300])
+            try:
+                api('POST', '/api/updates/run', {'package': PKG, 'device_id': sh}); check('updates: build with another key refused', False)
+            except AssertionError as e:
+                check('updates: build with another key refused', '409' in str(e) and 'key' in str(e), str(e)[:300])
+            api('DELETE', f'/api/apks/{k2["id"]}')
+
+            # GitHub source: per-ABI + general asset through a redirect, signing key learnt, then ETag.
+            GH['release'] = {'tag': 'v1.1', 'assets': [(101, 'fixture-1.1-arm64-v8a.apk', 'v2-k1-arm64.apk'), (102, 'fixture-1.1-universal.apk', 'v2-k1-universal.apk'), (103, 'fixture-1.1.apk.sha256', None)]}
+            r = api('POST', '/api/updates/sources', {'package': PKG, 'repo': 'acme/fixture', 'asset_pattern': '*universal*.apk', 'abi_patterns': {'arm64-v8a': '*arm64*.apk'}}, timeout=120)
+            imported = [i for i in r['check']['imported'] if i['status'] == 'imported']
+            check('updates: GitHub release imported (arm64 + universal, via redirect)', r['check']['status'] == 'ok' and len(imported) == 2, json.dumps(r['check'])[:400])
+            check('updates: trusted signing key learnt from the release', r['source']['signer_sha256'] == exp['k1']['sha256'], json.dumps(r['source'])[:300])
+            check('updates: imported APKs stored with their SHA-256', {sha256(fx('v2-k1-arm64.apk')), sha256(fx('v2-k1-universal.apk'))} <= {a['sha256'] for a in api('GET', '/api/apks')})
+            r = api('POST', '/api/updates/check', {'package': PKG})
+            check('updates: unchanged release answered by ETag (304)', r['results'][0]['status'] == 'not_modified' and GH['if_none_match'][-1] == '"v1.1"', json.dumps(r)[:300])
+            GH['release'] = {'tag': 'v9', 'assets': [(109, 'fixture-9-universal.apk', 'v2-k2.apk')]}
+            r = api('POST', '/api/updates/check', {'package': PKG})
+            check('updates: release signed by another key not imported', r['results'][0]['status'] == 'error' and 'different key' in r['results'][0]['detail'], json.dumps(r)[:300])
+
+            # Update now: this box is the canary; the arm64 build goes on, the version is verified and the app opened.
+            st = wait(lambda: (lambda b: b if b and b['state'] == 'update' else None)(box(PKG)), 60, 2)
+            check('updates: box offered the arm64 build', st and st['candidate']['abis'] == ['arm64-v8a'], json.dumps(st)[:300])
+            t7 = time.time()
+            r = api('POST', '/api/updates/run', {'package': PKG, 'device_id': sh})
+            rid = r['rollouts'][0]['id']
+            def rollout(): return next((x for x in updates()['rollouts'] if x['id'] == rid), None)
+            done = wait(lambda: (lambda x: x if x and x['status'] in ('done', 'failed', 'cancelled') else None)(rollout()), 240, 3)
+            check('updates: rollout finished on the box', done and done['status'] == 'done' and done['devices'][0]['status'] == 'ok', json.dumps(done)[:500])
+            inst = [e for e in sim_events('android.install_done', t7) if e.get('package') == PKG]
+            check('updates: arm64 build installed (-r only), app opened as canary check', inst and inst[-1].get('sha256') == sha256(fx('v2-k1-arm64.apk')) and sim_events('android.launch_check', t7), json.dumps(inst)[:300])
+            apps = api('GET', f'/api/devices/{sh}/apps')
+            check('updates: inventory shows the new version', any(a['package'] == PKG and a['version_code'] == 2 for a in apps))
+            check('updates: install recorded as a job', any(j['kind'] == 'app_update' and j['status'] == 'ok' for j in api('GET', f'/api/jobs?device_id={sh}&limit=30')))
+            try:
+                api('POST', '/api/updates/run', {'package': PKG, 'device_id': sh}); check('updates: nothing to install once current (no downgrade)', False)
+            except AssertionError as e:
+                check('updates: nothing to install once current (no downgrade)', '409' in str(e), str(e)[:300])
+
+            # Auto policy inside the site's maintenance window: a key-rotated release rolls out by itself.
+            here = datetime.now(ZoneInfo('Australia/Sydney'))
+            api('PUT', f'/api/updates/sites/{sid}', {'window_start': (here - timedelta(minutes=5)).strftime('%H:%M'), 'window_end': (here + timedelta(minutes=55)).strftime('%H:%M'), 'canary_device_id': sh})
+            api('PUT', '/api/updates/policies', {'package': PKG, 'scope_type': 'fleet', 'mode': 'auto'})
+            GH['release'] = {'tag': 'v1.2', 'assets': [(120, 'fixture-1.2-universal.apk', 'v3-rotated.apk')]}
+            r = api('POST', '/api/updates/check', {'package': PKG})
+            check('updates: key-rotated release accepted (proof of rotation)', r['results'][0]['status'] == 'ok', json.dumps(r)[:300])
+            api('POST', '/api/updates/probe', {'site_id': sid})
+            auto = wait(lambda: next((x for x in updates()['rollouts'] if x['trigger'] == 'auto' and x['version_code'] == 3 and x['status'] in ('done', 'failed')), None), 300, 4)
+            check('updates: automatic update ran in the maintenance window', auto and auto['status'] == 'done', json.dumps(auto)[:500])
+            api('PUT', '/api/updates/policies', {'package': PKG, 'scope_type': 'fleet', 'mode': None})
+            gh_srv.shutdown()
+        except Exception as e:
+            check('section app updates completed', False, str(e)[:300])
         print('== samsung control')
         try:
             t4 = time.time()

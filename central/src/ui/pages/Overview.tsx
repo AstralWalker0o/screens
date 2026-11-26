@@ -7,6 +7,7 @@ import { fmtCompact, fmtNum, fmtPct, greeting } from '../lib/format';
 import { CATEGORY, CATEGORY_ORDER } from '../lib/labels';
 import { BarList, ChartFrame, DnsChartCard, KpiTile, LegendItem, toSpark } from '../components/charts';
 import { AlertRow, JobRow, KindCounts, PrivacyRankRow, SiteHealthRow } from '../components/rows';
+import { UpdatesCard } from './updates/OverviewCard';
 import { Card, CardBody, CardHeader, EmptyState, IconButton, PageHeader, RelTime, Skeleton, SkeletonRows, StatusText, ButtonLink, th, td, cn } from '../components/ui';
 
 export default function Overview() {
@@ -122,6 +123,8 @@ export default function Overview() {
           </CardBody>
         </Card>
       </section>
+
+      <UpdatesCard className="mt-4" />
 
       <section className="mt-4 grid gap-4 lg:grid-cols-2">
         <Card>

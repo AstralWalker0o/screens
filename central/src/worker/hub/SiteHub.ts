@@ -22,6 +22,7 @@ import { scoreDevice } from '../privacy/score';
 import { seed } from '../lib/seed';
 import { RelayStream } from './stream';
 import { expectedFor, launcherPayload } from '../lib/launcher';
+import { UpdateRunner } from '../updates/runner';
 import { checkControl, mirrorOptions, type MirrorOptions, RESET_VIDEO, SCRCPY_DEVICE_PATH, SCRCPY_R2_KEY, SCRCPY_SHA256, ScrcpyVideoParser, serverCommand, type StreamMeta } from './mirror';
 
 interface Pending { resolve: (v: any) => void; reject: (e: Error) => void; timer: ReturnType<typeof setTimeout> }
@@ -1268,6 +1269,18 @@ export class SiteHub extends DurableObject<Env> {
     }
     return out;
   }
+  // ---------------------------------------------------------------- app updates (src/worker/updates, docs/UPDATES.md)
+  private _updates?: UpdateRunner;
+  private get updates(): UpdateRunner {
+    return this._updates ??= new UpdateRunner({
+      env: this.env, siteId: () => this.siteId, origin: () => this.origin, online: () => this.online,
+      gw: (op, args, t) => this.gw(op, args, t), diag: (l, src, m, d) => this.diag(l, src, m, d),
+      syncApps: (id) => this.syncApps(id), command: (id, c, a, actor) => this.command(id, c, a, actor), waitUntil: (p) => this.ctx.waitUntil(p),
+    });
+  }
+  async updateNow(req: { package: string; device_ids?: string[]; force?: boolean }, actor: string) { return this.updates.updateNow(req, actor); }
+  async updatesProbe(deviceIds?: string[]) { return this.updates.probe(deviceIds); }
+  async updatesCancel(id: string, actor: string) { return this.updates.cancel(id, actor); }
 
   // ---------------------------------------------------------------- automations
   async runAutomation(automationId: string, ctxDeviceId: string | null = null): Promise<{ ok: boolean; job_id: string }> {
@@ -1379,6 +1392,7 @@ export class SiteHub extends DurableObject<Env> {
           this.setKv('launcher_reconcile', false);
           await this.launcherReconcile().catch(() => undefined);
         }
+        this.updates.onTick();
       } else {
         const since = this.kv<number | null>('offline_since', null);
         if (since && t - since > 3 * 60_000) {
@@ -1534,6 +1548,7 @@ export class SiteHub extends DurableObject<Env> {
       requestDot: this.requestDot, flushAggregates: this.flushAggregates, pushLauncherConfig: this.pushLauncherConfig,
       launcherReconcile: this.launcherReconcile,
       sonosOverview: this.sonosOverview, sonosArt: this.sonosArt,
+      updateNow: this.updateNow, updatesProbe: this.updatesProbe, updatesCancel: this.updatesCancel,
     };
     const fn = allowed[method];
     if (!fn) return { ok: false, status: 400, code: 'bad_method', message: `Unknown hub method ${method}` };

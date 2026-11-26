@@ -7,6 +7,7 @@ import { launcherRoutes } from './api/launcher';
 import { automationSites, opsRoutes } from './api/ops';
 import type { AppEnv } from './api/shared';
 import { siteRoutes } from './api/sites';
+import { updateRoutes } from './api/updates';
 import { cronMatches } from './automations/cron';
 import { compilePolicies, refreshLists } from './dns/compile';
 import type { Env } from './env';
@@ -16,6 +17,7 @@ import { seed } from './lib/seed';
 import { hub, pushDnsAll } from './lib/hub';
 import { HttpError } from './lib/util';
 import { statusForCode } from './hub/SiteHub';
+import { updatesCron } from './updates/github';
 
 export { SiteHub } from './hub/SiteHub';
 
@@ -50,6 +52,7 @@ app.route('/api', deviceRoutes);
 app.route('/api', dnsRoutes);
 app.route('/api', opsRoutes);
 app.route('/api', launcherRoutes);
+app.route('/api', updateRoutes);
 app.all('/api/*', (c) => c.json({ error: 'not_found', message: 'No such API endpoint' }, 404));
 
 async function scheduled(controller: ScheduledController, env: Env, ctx: ExecutionContext) {
@@ -81,6 +84,9 @@ async function scheduled(controller: ScheduledController, env: Env, ctx: Executi
       env.DB.prepare('DELETE FROM discovered WHERE last_seen < ?').bind(t - 30 * 86_400_000),
     ]).then(() => undefined));
   }
+
+  // App update sources (GitHub releases): each checked every 6 h, a couple per minute at most.
+  ctx.waitUntil(updatesCron(env, t).catch((e) => console.error('updates cron failed', e)));
 
   // Scheduled automations, evaluated in each site's timezone unless the automation sets one.
   const autos = (await env.DB.prepare("SELECT * FROM automations WHERE enabled = 1 AND json_extract(trigger, '$.type') = 'schedule'").all<Row>()).results.map(toAutomation);

@@ -12,6 +12,8 @@ import { AppIcon } from '../../components/AppLauncher';
 import { Badge, Button, ButtonLink, Callout, Card, EmptyState, IconButton, SkeletonRows, StatusText, cn } from '../../components/ui';
 import { Checkbox, Field, Input, SearchInput, Segmented } from '../../components/forms';
 import { ConfirmDialog, Dialog, Menu } from '../../components/overlay';
+import { DeviceUpdatesBanner, UpdateBadge, useDeviceUpdates } from '../updates/DeviceUpdates';
+import type { DeviceUpdateItem } from '../../../shared/updates';
 
 type Filter = 'all' | 'user' | 'system';
 
@@ -28,6 +30,7 @@ export function AppsTab({ device: d }: { device: Device }) {
   const [blocked, setBlocked] = useState<Record<string, boolean>>({});
   const [debloat, setDebloat] = useState<'confirm' | 'running' | DebloatResult | null>(null);
   const android = d.kind === 'android';
+  const updates = useDeviceUpdates(d);
 
   const apps = useMemo(() => {
     const s = search.trim().toLowerCase();
@@ -84,6 +87,7 @@ export function AppsTab({ device: d }: { device: Device }) {
           {d.kind === 'samsung' ? 'Samsung' : 'LG'} TVs only let Screens see which apps are installed and open them. Installing, removing or clearing apps has to be done on the TV itself.
         </Callout>
       )}
+      {android && <DeviceUpdatesBanner device={d} items={updates} />}
       <div className="flex flex-wrap items-center gap-2">
         <SearchInput value={search} onChange={setSearch} placeholder="Search apps" className="w-full sm:w-64" />
         <Segmented<Filter>
@@ -123,6 +127,7 @@ export function AppsTab({ device: d }: { device: Device }) {
                 key={a.package}
                 app={a}
                 device={d}
+                update={updates.get(a.package)}
                 onLaunch={() => cmd('launch', a, `Opening ${a.label ?? a.package}`, android ? {} : { app_id: a.app_id, package: undefined })}
                 onStop={() => cmd('stop', a, `Stopped ${a.label}`)}
                 onToggle={() => cmd(a.enabled ? 'disable' : 'enable', a, a.enabled ? `Disabled ${a.label}` : `Enabled ${a.label}`)}
@@ -197,8 +202,8 @@ export function AppsTab({ device: d }: { device: Device }) {
   );
 }
 
-function AppRow({ app: a, device: d, onLaunch, onStop, onToggle, onStore, onClear, onUninstall, blocked, onPermission }: {
-  app: DeviceApp; device: Device; onLaunch: () => void; onStop: () => void; onToggle: () => void; onStore: () => void; onClear: () => void; onUninstall: () => void;
+function AppRow({ app: a, device: d, update, onLaunch, onStop, onToggle, onStore, onClear, onUninstall, blocked, onPermission }: {
+  app: DeviceApp; device: Device; update?: DeviceUpdateItem; onLaunch: () => void; onStop: () => void; onToggle: () => void; onStore: () => void; onClear: () => void; onUninstall: () => void;
   blocked: Record<string, boolean>; onPermission: (perm: PermKey, block: boolean) => Promise<void>;
 }) {
   const android = d.kind === 'android';
@@ -216,6 +221,7 @@ function AppRow({ app: a, device: d, onLaunch, onStop, onToggle, onStore, onClea
           {a.risk === 'high' && <Badge tone="crit" title="Known for heavy tracking or ads">High risk</Badge>}
           {a.risk === 'medium' && <Badge tone="warn" title="Some tracking or data collection">Medium risk</Badge>}
           {a.category && <Badge>{a.category}</Badge>}
+          <UpdateBadge item={update} />
         </p>
         <p className="mt-0.5 truncate font-mono text-[11.5px] text-muted">
           {a.package}

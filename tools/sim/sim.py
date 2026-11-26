@@ -351,6 +351,97 @@ def png_bytes(w=1280, h=720):
 
 PNG = None
 
+# --------------------------------------------------------------------------- APK reading (app update manager)
+LAUNCHER_PKG = 'au.supercluster.screens.launcher'
+
+def java_hash(der):
+    """Java Arrays.hashCode(byte[]) as Integer.toHexString: what `dumpsys package` prints for a signature."""
+    h = 1
+    for x in der:
+        h = (31 * h + (x - 256 if x > 127 else x)) & 0xffffffff
+    return format(h, 'x')
+
+def axml_manifest(buf):
+    """package, long versionCode, versionName from a binary AndroidManifest.xml."""
+    if len(buf) < 8 or struct.unpack_from('<H', buf, 0)[0] != 3: return None
+    off = struct.unpack_from('<H', buf, 2)[0]
+    strings, resids = [], []
+    pkg, vc, vname, major = None, 0, None, 0
+    while off + 8 <= len(buf):
+        typ, hsz, size = struct.unpack_from('<HHI', buf, off)
+        if size < 8: break
+        if typ == 1 and not strings:
+            cnt, _, flags, sstart = struct.unpack_from('<IIII', buf, off + 8)
+            for i in range(cnt):
+                q = off + sstart + struct.unpack_from('<I', buf, off + hsz + i * 4)[0]
+                if flags & 0x100:
+                    q += 2 if buf[q] & 0x80 else 1
+                    n = buf[q]; q += 1
+                    if n & 0x80: n = ((n & 0x7f) << 8) | buf[q]; q += 1
+                    strings.append(buf[q:q + n].decode('utf-8', 'replace'))
+                else:
+                    n = struct.unpack_from('<H', buf, q)[0]; q += 2
+                    if n & 0x8000: n = ((n & 0x7fff) << 16) | struct.unpack_from('<H', buf, q)[0]; q += 2
+                    strings.append(buf[q:q + 2 * n].decode('utf-16-le', 'replace'))
+        elif typ == 0x180:
+            resids = list(struct.unpack_from('<%dI' % ((size - hsz) // 4), buf, off + hsz))
+        elif typ == 0x102 and strings[struct.unpack_from('<I', buf, off + 20)[0]] == 'manifest':
+            astart, asize, acount = struct.unpack_from('<HHH', buf, off + 24)
+            for i in range(acount):
+                a = off + 16 + astart + i * asize
+                ni, raw = struct.unpack_from('<II', buf, a + 4)
+                dtype, data = buf[a + 15], struct.unpack_from('<I', buf, a + 16)[0]
+                rid = resids[ni] if ni < len(resids) else None
+                name = strings[ni] if ni < len(strings) else ''
+                sval = strings[raw] if raw != 0xffffffff else (strings[data] if dtype == 3 else None)
+                if name == 'package': pkg = sval
+                elif rid == 0x0101021b or name == 'versionCode': vc = data if dtype in (0x10, 0x11) else int(sval or 0)
+                elif rid == 0x0101021c or name == 'versionName': vname = sval
+                elif rid == 0x01010576: major = data
+            break
+        off += size
+    return (pkg, (major << 32) + vc, vname) if pkg else None
+
+def apk_signer_der(b, sdk=30):
+    """The signing certificate Android uses on this platform version (v3.1 on 13+, v3 on 9+, else v2)."""
+    eocd = b.rfind(b'PK\x05\x06', max(0, len(b) - 65557))
+    if eocd < 0: return None
+    cd = struct.unpack_from('<I', b, eocd + 16)[0]
+    if cd < 24 or b[cd - 16:cd] != b'APK Sig Block 42': return None
+    size = struct.unpack_from('<Q', b, cd - 24)[0]
+    p, end, blocks = cd - size, cd - 24, {}
+    while p + 12 <= end:
+        n, bid = struct.unpack_from('<QI', b, p)
+        blocks[bid] = b[p + 12:p + 8 + n]; p += 8 + n
+    def lp(buf, o):
+        n = struct.unpack_from('<I', buf, o)[0]
+        return buf[o + 4:o + 4 + n], o + 4 + n
+    def signers(v, v3):
+        seq, _ = lp(v, 0); o = 0
+        while o < len(seq):
+            sgn, o = lp(seq, o)
+            sd, q = lp(sgn, 0)
+            mn, mx = struct.unpack_from('<II', sgn, q) if v3 else (0, 0x7fffffff)
+            _, r = lp(sd, 0)
+            certs, _ = lp(sd, r)
+            der, _ = lp(certs, 0)
+            yield mn, mx, der
+    for bid, v3, need in ((0x1b93ad61, True, 33), (0xf05368c0, True, 28), (0x7109871a, False, 24)):
+        if bid in blocks and sdk >= need:
+            for mn, mx, der in signers(blocks[bid], v3):
+                if mn <= sdk <= mx: return der
+    return None
+
+def apk_info(b):
+    """(package, versionCode, versionName, signer DER) of an APK, or None when it isn't a real one."""
+    try:
+        import io, zipfile
+        with zipfile.ZipFile(io.BytesIO(b)) as z:
+            m = axml_manifest(z.read('AndroidManifest.xml'))
+        return (*m, apk_signer_der(b)) if m else None
+    except Exception:
+        return None
+
 class FakeAndroid:
     def __init__(self, ip, n):
         self.ip, self.n = ip, n
@@ -374,6 +465,12 @@ class FakeAndroid:
         self.scrcpy = None
         self.launcher_assets = {}   # sha → bytes held by the launcher's asset provider (v2 only)
         self.launcher_cfg_json = None
+        # App update manager: Google Play keeps these up to date; Stan was sideloaded.
+        self.installers = {'com.netflix.ninja': 'com.android.vending', 'com.google.android.youtube.tv': 'com.android.vending', 'com.spotify.tv.android': 'com.android.vending'}
+        self.apks, self.certs = {}, {}
+        self.fg = 'com.google.android.tvlauncher'
+        self.playing = False
+        self.crash_on_launch = set()
 
     LAUNCHER = 'au.supercluster.screens.launcher'
     ASSETS = 'content://au.supercluster.screens.launcher.assets/'
@@ -394,13 +491,73 @@ class FakeAndroid:
         refs += [t.get('asset') for t in (home.get('tiles') or {}).values() if t.get('asset')]
         return [r for r in dict.fromkeys(refs) if r and r not in self.launcher_assets]
 
+    def install(self, data):
+        """Install like Android does: same signer required for updates, no downgrades."""
+        info = apk_info(data)
+        if not info:  # older checks upload placeholder bytes
+            self.packages.setdefault(LAUNCHER_PKG, ('/data/app/~~l==/au.supercluster.screens.launcher-1==/base.apk', 1, '1.0.0'))
+            return 'Success', None
+        pkg, vc, vname, der = info
+        cur = self.packages.get(pkg)
+        if cur and self.certs.get(pkg) and der != self.certs[pkg]:
+            return f'Failure [INSTALL_FAILED_UPDATE_INCOMPATIBLE: Existing package {pkg} signatures do not match newer version; ignoring!]', pkg
+        if cur and vc < cur[1]:
+            return f'Failure [INSTALL_FAILED_VERSION_DOWNGRADE: Downgrade detected: Update version code {vc} is older than current {cur[1]}]', pkg
+        self.packages[pkg] = (f'/data/app/~~u{len(self.apks)}==/{pkg}-1==/base.apk', vc, vname or str(vc))
+        self.apks[pkg], self.certs[pkg] = data, der
+        self.installers.pop(pkg, None)
+        return 'Success', pkg
+
+    def upd(self, cmd):
+        """Commands from the app update manager (central/src/worker/updates/device.ts), marked `echo @@upd=<kind>`."""
+        kind = re.match(r'echo @@upd=(\w+)', cmd).group(1)
+        def sigs(p):
+            der = self.certs.get(p)
+            h = java_hash(der) if der else format(zlib.crc32(p.encode()), 'x')
+            return f'PackageSignatures{{4f2a1c version:2, signatures:[{h}], past signatures:[]}}'
+        if kind == 'probe':
+            out = ['@@upd=probe', '@@abi=arm64-v8a', '@@abilist=arm64-v8a,armeabi-v7a,armeabi', '@@sdk=30', '@@PKGS']
+            for p, v in self.packages.items():
+                if v[0].startswith('/data/'): out.append(f'{p}|versionCode={v[1]}|installerPackageName={self.installers.get(p) or "null"}|{sigs(p)}|')
+            return out + ['@@END']
+        if kind == 'pre':
+            p = re.search(r'pm list packages (\S+)', cmd).group(1)
+            v = self.packages.get(p)
+            return [f'@@present={1 if v else 0}', f'@@vc={v[1] if v else ""}', f'@@installer={self.installers.get(p) or "null"}', f'@@sigs={sigs(p) if v else ""}',
+                    f'@@wake={"Awake" if self.awake else "Asleep"}', f'@@resumed=  mResumedActivity: ActivityRecord{{1a2b u0 {self.fg}/.MainActivity t42}}',
+                    f'@@home={self.home}/.MainActivity', f'@@playing={1 if self.playing else 0}']
+        if kind == 'apktail':
+            p = re.search(r'pm path (\S+)', cmd).group(1)
+            b = self.apks.get(p)
+            if b is None: return ['@@path=', '@@size=', '@@b64=']
+            return [f'@@path={self.packages[p][0]}', f'@@size={len(b)}', '@@b64=' + base64.b64encode(b[-192 * 1024:]).decode()]
+        if kind == 'apkpart':
+            m = re.search(r"tail -c \+(\d+) '([^']+)'", cmd)
+            n = int(re.search(r'head -c (\d+)', cmd).group(1))
+            b = next((self.apks[p] for p, v in self.packages.items() if v[0] == m.group(2) and p in self.apks), b'')
+            start = int(m.group(1)) - 1
+            return ['@@b64=' + base64.b64encode(b[start:start + n]).decode()]
+        if kind == 'ver':
+            p = re.search(r'dumpsys package (\S+)', cmd).group(1)
+            return [f'@@vc={self.packages[p][1] if p in self.packages else ""}']
+        if kind == 'launch':
+            p = re.search(r'monkey -p (\S+)', cmd).group(1)
+            crash = p in self.crash_on_launch
+            log('android.launch_check', ip=self.ip, package=p, crashed=crash)
+            front = p if self.awake and not crash else self.home
+            self.fg = self.home  # the check ends with a HOME intent
+            return ['@@crash0=0', f'@@pid={"" if crash else 4242}', f'@@resumed=  mResumedActivity: ActivityRecord{{1 u0 {front}/.Main t9}}', f'@@crash1={1 if crash else 0}', '@@done=1']
+        return []
+
     def shell(self, cmd):
         """Very small emulation of the commands the Screens Android driver sends."""
         out = []
         third = [p for p, v in self.packages.items() if v[0].startswith('/data/')]
         if cmd.strip() == 'getprop ro.serialno':  # identity check after a DHCP move
             return f'SIM{self.n:04d}\n'.encode()
-        if '@@manufacturer' in cmd:
+        if cmd.startswith('echo @@upd='):
+            out += self.upd(cmd)
+        elif '@@manufacturer' in cmd:
             out += ['@@manufacturer=NVIDIA', f'@@model=SHIELD Android TV', '@@release=11', '@@sdk=30', f'@@serial=SIM{self.n:04d}', '@@build=SR1.230125.001', f'@@device_name=Shield {self.n}',
                     '@@wm=Physical size: 1920x1080 ', f'@@wake=mWakefulness={"Awake" if self.awake else "Asleep"}', '@@resumed=  mResumedActivity: ActivityRecord{1a2b u0 com.netflix.ninja/.MainActivity t42}',
                     '@@pdns_mode=opportunistic', '@@pdns_host=null', f'@@mac=00:04:4b:00:00:{self.n:02x}', '@@uptime=123456']
@@ -639,14 +796,21 @@ def adbd(ip, dev):
                         continue
                     if s and s['kind'] == 'install':
                         s['got'] += len(data)
+                        s.setdefault('buf', bytearray()).extend(data)
                         if len(s.setdefault('head', b'')) < 65536: s['head'] += data[:65536]
                         if s['got'] >= s['need']:
-                            # Any install also "installs" the Screens Launcher: 2.0.0, or 1.0.0 when the APK carries the v1 marker.
-                            v1 = b'SCREENS_LAUNCHER_V1' in s['head']
-                            log('android.install_done', ip=ip, size=s['got'], launcher='1.0.0' if v1 else '2.0.0')
-                            dev.packages['au.supercluster.screens.launcher'] = ('/data/app/~~l==/au.supercluster.screens.launcher-1==/base.apk', 10000 if v1 else 20000, '1.0.0' if v1 else '2.0.0')
-                            if v1: dev.launcher_assets.clear()
-                            s['kind'] = 'out'; s['out'] = [b'Success\n']
+                            apk = bytes(s['buf'])
+                            if apk_info(apk):
+                                # A real APK (update manager): Android's rules apply (same signer, no downgrade).
+                                res, pkg = dev.install(apk)
+                            else:
+                                # Placeholder bytes "install" the Screens Launcher: 2.0.0, or 1.0.0 when they carry the v1 marker.
+                                v1 = b'SCREENS_LAUNCHER_V1' in s['head']
+                                dev.packages['au.supercluster.screens.launcher'] = ('/data/app/~~l==/au.supercluster.screens.launcher-1==/base.apk', 10000 if v1 else 20000, '1.0.0' if v1 else '2.0.0')
+                                if v1: dev.launcher_assets.clear()
+                                res, pkg = 'Success', 'au.supercluster.screens.launcher'
+                            log('android.install_done', ip=ip, size=s['got'], sha256=hashlib.sha256(apk).hexdigest(), package=pkg, result=res)
+                            s['kind'] = 'out'; s['out'] = [res.encode() + b'\n']
                             pump(conn, a1, streams)
                 elif cmd == A_CLSE:
                     st_ = streams.pop(a1, None)
