@@ -48,7 +48,8 @@ export function fingerprint(h: RawHost): Fingerprint {
   if (h.ports.includes(8001) || h.ports.includes(8002) || /Samsung|Tizen/i.test(servers)) {
     return { kind: 'samsung', manufacturer: 'Samsung', probe: 'samsung' };
   }
-  if (h.ports.includes(3000) || h.ports.includes(3001) || /webos|LGE|lge-com/i.test(servers)) {
+  // Port 3000 alone is common (Grafana, Node apps…); webOS opens 3000 *and* 3001 or announces itself over SSDP.
+  if ((h.ports.includes(3000) && h.ports.includes(3001)) || /webos|LGE|lge-com/i.test(servers)) {
     return { kind: 'lg', manufacturer: 'LG', probe: 'lg-ssdp' };
   }
   if (h.ports.includes(5555) || services.has('_androidtvremote2._tcp') || services.has('_adb._tcp') || services.has('_adb-tls-connect._tcp')) {

@@ -14,7 +14,7 @@ import { b64Decode, b64Encode, openJson, sealJson, signAgentUrl } from '../lib/c
 import {
   audit, createJob, finishJob, getAppSettings, kioskPinHash, raiseAlert, resolveAlert, type Row, siteMdns, siteSettings, toAutomation, toDevice, toDiscovered,
 } from '../lib/db';
-import { chunk, dayKey, hourKey, HttpError, normMac, now, parseJson, rid, sleep } from '../lib/util';
+import { chunk, dayKey, hourKey, HttpError, isPrivateIPv4, normMac, now, parseJson, rid, sleep } from '../lib/util';
 import { scoreDevice } from '../privacy/score';
 import { seed } from '../lib/seed';
 import { RelayStream } from './stream';
@@ -504,8 +504,15 @@ export class SiteHub extends DurableObject<Env> {
   async discover(): Promise<Discovered[]> {
     const site = await this.site();
     const settings = siteSettings(site);
+    // Always scan the gateway's own subnets (≤ /22) plus any extra subnets configured for the site.
+    const gwInfo = await this.env.DB.prepare("SELECT info FROM gateways WHERE site_id = ? AND status = 'online' ORDER BY connected_at DESC LIMIT 1").bind(this.siteId).first<Row>();
+    const own = ((parseJson<any>(gwInfo?.info, {}).interfaces ?? []) as { addrs: string[] }[]).flatMap((i) => i.addrs)
+      .filter((a) => /^\d+\.\d+\.\d+\.\d+\/(2[2-9]|3[0-2])$/.test(a) && !a.startsWith('127.') && !a.startsWith('172.17.'))
+      .map((a) => { const [ip, bits] = a.split('/'); const n = ip.split('.').reduce((x, o) => (x << 8) + Number(o), 0) >>> 0; const m = (~0 << (32 - Number(bits))) >>> 0; const net = (n & m) >>> 0; return `${[24, 16, 8, 0].map((sh) => (net >>> sh) & 255).join('.')}/${bits}`; });
+    // The gateway refuses non-private ranges (and would fail the whole scan), so only send private ones.
+    const cidrs = [...new Set([...own, ...settings.scan_cidrs])].filter((c) => isPrivateIPv4(c.split('/')[0]));
     const [scan, mdns, ssdp, neigh] = await Promise.allSettled([
-      this.gw<any>('net.scan', { cidrs: settings.scan_cidrs.length ? settings.scan_cidrs : undefined, ports: DISCOVERY_PORTS, timeout_ms: 500 }, 90_000),
+      this.gw<any>('net.scan', { cidrs: cidrs.length ? cidrs : undefined, ports: DISCOVERY_PORTS, timeout_ms: 500 }, 90_000),
       this.gw<any>('net.mdns_browse', { services: DISCOVERY_MDNS, duration_ms: 4000 }, 20_000),
       this.gw<any>('net.ssdp_search', { st: 'ssdp:all', duration_ms: 4000 }, 20_000),
       this.gw<any>('net.neighbors', {}, 10_000),
@@ -553,7 +560,9 @@ export class SiteHub extends DurableObject<Env> {
         .bind(this.siteId, h.ip, normMac(h.mac), fp.kind, fp.name ?? null, fp.model ?? null, fp.manufacturer ?? null, JSON.stringify(hints), t, t).run();
       results.push({ site_id: this.siteId, ip: h.ip, mac: normMac(h.mac), kind_guess: fp.kind, name: fp.name ?? null, model: fp.model ?? null, manufacturer: fp.manufacturer ?? null, hints, first_seen: t, last_seen: t, adopted_device_id: adopted?.id ?? null });
     }));
-    await audit(this.env, 'system', 'site.discover', { site_id: this.siteId, details: { found: results.length } });
+    // The Discover list reflects the latest scan: drop entries this scan didn't see (adopted devices are unaffected).
+    await this.env.DB.prepare('DELETE FROM discovered WHERE site_id = ? AND last_seen < ?').bind(this.siteId, t).run();
+    await audit(this.env, 'system', 'site.discover', { site_id: this.siteId, details: { found: results.length, cidrs } });
     return results.sort((a, b) => a.ip.localeCompare(b.ip, undefined, { numeric: true }));
   }
 

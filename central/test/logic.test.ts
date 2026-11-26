@@ -112,6 +112,8 @@ describe('fingerprinting', () => {
     expect(fingerprint({ ip: '1', ports: [1400], mdns: [], ssdp: [] }).kind).toBe('sonos');
     expect(fingerprint({ ip: '1', ports: [8001, 8002, 9197], mdns: [], ssdp: [] }).kind).toBe('samsung');
     expect(fingerprint({ ip: '1', ports: [3000, 3001], mdns: [], ssdp: [] }).kind).toBe('lg');
+    expect(fingerprint({ ip: '1', ports: [3000], mdns: [], ssdp: [] }).kind).toBeNull();   // e.g. a Grafana box
+    expect(fingerprint({ ip: '1', ports: [], mdns: [], ssdp: [{ server: 'WebOS/4.1.0 UPnP/1.0' }] }).kind).toBe('lg');
     const shield = fingerprint({ ip: '1', ports: [5555, 8008, 8009], mdns: [{ service: '_googlecast._tcp', instance: 'x', txt: { fn: 'Lounge Shield', md: 'SHIELD Android TV' } }], ssdp: [] });
     expect(shield).toMatchObject({ kind: 'android', name: 'Lounge Shield', manufacturer: 'NVIDIA' });
     expect(fingerprint({ ip: '1', ports: [22], mdns: [], ssdp: [] }).kind).toBeNull();

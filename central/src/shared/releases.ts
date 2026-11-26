@@ -17,6 +17,18 @@ export interface Release {
 
 export const RELEASES: Release[] = [
   {
+    version: '0.3.1',
+    date: '2026-11-26',
+    title: 'Discovery fixes from the first real site',
+    summary: 'Fixes found while bringing the first house online.',
+    components: { gateway: '0.2.0', launcher: '1.0.0' },
+    notes: [
+      { kind: 'fixed', text: 'Devices that only open port 3000 (e.g. Grafana or other web apps) are no longer mistaken for LG TVs. LG needs ports 3000 and 3001, or a webOS announcement.' },
+      { kind: 'improved', text: 'Discovery always scans the gateway\'s own subnet as well as any extra subnets you add in site settings.' },
+      { kind: 'improved', text: 'The Discover list shows the latest scan only, so stale entries from earlier scans disappear.' },
+    ],
+  },
+  {
     version: '0.3.0',
     date: '2026-11-26',
     title: 'Live screen mirroring',

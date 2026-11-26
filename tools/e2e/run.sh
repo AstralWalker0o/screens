@@ -8,7 +8,10 @@ NS=simlan
 [ "$(id -u)" -eq 0 ] || { echo "run as root (network namespaces, DNS port 53)"; exit 1; }
 command -v ip >/dev/null || { echo "needs iproute2"; exit 1; }
 
-if ! ip netns list | grep -q "^$NS"; then
+# Namespaces can survive a container restart as stale entries: rebuild unless they actually work.
+ns_ok() { ip netns exec "$1" true 2>/dev/null && ip link show "$2" >/dev/null 2>&1; }
+if ! ns_ok "$NS" lan0; then
+  ip netns del "$NS" 2>/dev/null || true; ip link del lan0 2>/dev/null || true
   ip netns add "$NS"
   ip link add lan0 type veth peer name simeth0
   ip link set simeth0 netns "$NS"
@@ -20,7 +23,8 @@ if ! ip netns list | grep -q "^$NS"; then
 fi
 
 # Second namespace = the "main VLAN" with phones, for real-multicast mDNS reflector tests.
-if ! ip netns list | grep -q "^simmain"; then
+if ! ns_ok simmain lan1; then
+  ip netns del simmain 2>/dev/null || true; ip link del lan1 2>/dev/null || true
   ip netns add simmain
   ip link add lan1 type veth peer name simeth1
   ip link set simeth1 netns simmain
