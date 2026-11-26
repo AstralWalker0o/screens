@@ -119,7 +119,7 @@ export const sites: Omit<SiteDetail, 'devices' | 'gateway' | 'gateway_status' | 
   },
 ];
 
-const ANDROID_CAPS: DeviceCapability[] = ['remote', 'text', 'apps', 'launch', 'install', 'uninstall', 'disable', 'clear', 'screenshot', 'tap', 'shell', 'reboot', 'power', 'volume', 'private_dns', 'media', 'toast', 'guest_reset', 'launcher'];
+const ANDROID_CAPS: DeviceCapability[] = ['remote', 'text', 'apps', 'launch', 'install', 'uninstall', 'disable', 'clear', 'screenshot', 'tap', 'shell', 'reboot', 'power', 'volume', 'private_dns', 'media', 'toast', 'guest_reset', 'launcher', 'mirror' as DeviceCapability];
 const SAMSUNG_CAPS: DeviceCapability[] = ['remote', 'text', 'apps', 'launch', 'power', 'volume', 'guest_reset'];
 const LG_CAPS: DeviceCapability[] = ['remote', 'text', 'apps', 'launch', 'power', 'volume', 'toast'];
 const SONOS_CAPS: DeviceCapability[] = ['volume', 'mute', 'media', 'group', 'led', 'eq', 'favorites'];

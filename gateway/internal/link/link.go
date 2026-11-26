@@ -7,6 +7,7 @@ package link
 
 import (
 	"context"
+	"encoding/base64"
 	"encoding/json"
 	"errors"
 	"log/slog"
@@ -46,6 +47,7 @@ var (
 // StreamRouter receives inbound stream frames.
 type StreamRouter interface {
 	Inbound(s ops.Sink, f *proto.Stream)
+	InboundBytes(s ops.Sink, id string, data []byte)
 	SessionClosed(s ops.Sink)
 }
 
@@ -220,8 +222,9 @@ func (l *Link) dial(ctx context.Context) (*websocket.Conn, *http.Response, error
 }
 
 type outFrame struct {
-	b     []byte
-	after func()
+	b      []byte
+	after  func()
+	binary bool
 }
 
 // Session is one connected WebSocket.
@@ -239,6 +242,7 @@ type Session struct {
 
 	lastRx        atomic.Int64
 	droppedEvents atomic.Uint64
+	binary        atomic.Bool // hub accepts binary stream frames
 	wg            sync.WaitGroup
 }
 
@@ -323,7 +327,14 @@ func (s *Session) readLoop() {
 		}
 		s.lastRx.Store(time.Now().UnixMilli())
 		if typ != websocket.MessageText {
-			s.log.Debug("ignoring binary frame from hub", "bytes", len(b))
+			id, payload, ok := proto.DecodeBinaryStream(b)
+			if !ok {
+				s.log.Debug("ignoring unknown binary frame from hub", "bytes", len(b))
+				continue
+			}
+			if s.link.opts.Streams != nil {
+				s.link.opts.Streams.InboundBytes(s, id, payload)
+			}
 			continue
 		}
 		var env proto.Envelope
@@ -346,6 +357,7 @@ func (s *Session) readLoop() {
 			if w.ServerTime > 0 {
 				s.link.setSkew(w.ServerTime - time.Now().UnixMilli())
 			}
+			s.binary.Store(w.BinaryStreams)
 			if s.link.opts.OnWelcome != nil {
 				s.link.opts.OnWelcome(w)
 			}
@@ -379,7 +391,11 @@ func (s *Session) writer() {
 	defer s.wg.Done()
 	write := func(f outFrame) bool {
 		wctx, cancel := context.WithTimeout(s.ctx, WriteTimeout)
-		err := s.conn.Write(wctx, websocket.MessageText, f.b)
+		typ := websocket.MessageText
+		if f.binary {
+			typ = websocket.MessageBinary
+		}
+		err := s.conn.Write(wctx, typ, f.b)
 		cancel()
 		if err != nil {
 			if s.ctx.Err() == nil {
@@ -551,6 +567,25 @@ func (s *Session) SendStream(ctx context.Context, f *proto.Stream) error {
 	}
 	select {
 	case s.stream <- outFrame{b: b}:
+		return nil
+	case <-s.ctx.Done():
+		return ErrSessionClosed
+	case <-ctx.Done():
+		return ctx.Err()
+	}
+}
+
+// SendStreamBytes implements ops.Sink.
+func (s *Session) SendStreamBytes(ctx context.Context, id string, data []byte) error {
+	if !s.binary.Load() {
+		return s.SendStream(ctx, proto.StreamBinary(id, base64.StdEncoding.EncodeToString(data)))
+	}
+	b := proto.EncodeBinaryStream(id, data)
+	if len(b) > proto.MaxFrame {
+		return proto.ErrFrameTooLarge
+	}
+	select {
+	case s.stream <- outFrame{b: b, binary: true}:
 		return nil
 	case <-s.ctx.Done():
 		return ErrSessionClosed

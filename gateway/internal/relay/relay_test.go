@@ -43,6 +43,9 @@ func (f *fakeSink) SendStream(ctx context.Context, s *proto.Stream) error {
 	}
 }
 func (f *fakeSink) Done() <-chan struct{} { return f.done }
+func (f *fakeSink) SendStreamBytes(ctx context.Context, id string, data []byte) error {
+	return f.SendStream(ctx, proto.StreamBinary(id, base64.StdEncoding.EncodeToString(data)))
+}
 
 func (f *fakeSink) next(t *testing.T) *proto.Stream {
 	t.Helper()

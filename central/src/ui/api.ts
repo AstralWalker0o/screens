@@ -291,3 +291,60 @@ export function openLive(siteId: string, onEvent: (e: LiveEvent) => void, onStat
     ws?.close();
   };
 }
+
+// ---------------------------------------------------------------------------
+// Live screen mirroring (docs/MIRROR.md): JSON status/meta text frames + aligned scrcpy binary units.
+
+export interface MirrorParams { max_size?: number; max_fps?: number; bitrate?: number }
+export type MirrorText =
+  | { type: 'status'; state: 'starting' | 'streaming' | 'ended' | 'error'; message?: string }
+  | { type: 'meta'; device_name?: string; codec?: string; width: number; height: number }
+  | { type: 'pong' };
+export interface MirrorHandlers {
+  onOpen?: () => void;
+  onText: (msg: MirrorText) => void;
+  onBinary: (buf: ArrayBuffer) => void;
+  onClose: (info: { code: number; reason: string; clean: boolean }) => void;
+}
+export interface MirrorConnection { send: (data: ArrayBuffer | string) => void; close: () => void }
+
+export function openMirror(deviceId: string, params: MirrorParams, h: MirrorHandlers): MirrorConnection {
+  if (MOCK) {
+    let conn: MirrorConnection | null = null;
+    let closed = false;
+    const pending: (ArrayBuffer | string)[] = [];
+    void mock().then((m) => {
+      if (closed) return;
+      conn = m.mirror(deviceId, params, h);
+      for (const p of pending) conn.send(p);
+    });
+    return {
+      send: (d) => (conn ? conn.send(d) : void pending.push(d)),
+      close: () => {
+        closed = true;
+        conn?.close();
+      },
+    };
+  }
+  const ws = new WebSocket(`${location.origin.replace(/^http/, 'ws')}/api/devices/${enc(deviceId)}/mirror${qs({ ...params })}`);
+  ws.binaryType = 'arraybuffer';
+  ws.onopen = () => h.onOpen?.();
+  ws.onmessage = (m) => {
+    if (typeof m.data === 'string') {
+      try {
+        h.onText(JSON.parse(m.data) as MirrorText);
+      } catch {
+        /* ignore malformed text frame */
+      }
+    } else h.onBinary(m.data as ArrayBuffer);
+  };
+  ws.onclose = (e) => h.onClose({ code: e.code, reason: e.reason, clean: e.wasClean });
+  return {
+    send: (d) => {
+      if (ws.readyState === WebSocket.OPEN) ws.send(d);
+    },
+    close: () => {
+      if (ws.readyState === WebSocket.OPEN || ws.readyState === WebSocket.CONNECTING) ws.close(1000, 'viewer left');
+    },
+  };
+}

@@ -1,7 +1,7 @@
 import { Hono } from 'hono';
 import type { DeviceApp } from '../../shared/types';
 import { audit, type Row, toDevice } from '../lib/db';
-import { hub, originOf } from '../lib/hub';
+import { hub, hubStub, originOf } from '../lib/hub';
 import { domainValid, HttpError, isPrivateIPv4, now, parseJson } from '../lib/util';
 import { actorOf, type AppEnv, body } from './shared';
 
@@ -142,6 +142,20 @@ deviceRoutes.put('/devices/:id/privacy/checklist', async (c) => {
   await c.env.DB.prepare('UPDATE devices SET privacy = ?, updated_at = ? WHERE id = ?').bind(JSON.stringify(p), now(), d.id).run();
   await audit(c.env, actorOf(c), 'privacy.checklist', { target_type: 'device', target_id: d.id, site_id: d.site_id, details: b });
   return c.json({ ok: true });
+});
+
+/** Live screen mirroring WebSocket (docs/MIRROR.md). */
+deviceRoutes.get('/devices/:id/mirror', async (c) => {
+  if (c.req.header('upgrade') !== 'websocket') throw new HttpError(426, 'upgrade_required', 'WebSocket upgrade required');
+  const d = await deviceRow(c, c.req.param('id'));
+  if (d.kind !== 'android') throw new HttpError(400, 'not_supported', 'Live mirroring is available for Android TV devices');
+  const q = new URL(c.req.url).searchParams;
+  q.set('device', d.id);
+  const headers = new Headers(c.req.raw.headers);
+  headers.set('x-site-id', d.site_id);
+  headers.set('x-origin', originOf(c.req.raw, c.env));
+  headers.set('x-actor', actorOf(c));
+  return hubStub(c.env, d.site_id).fetch(new Request(`https://hub/mirror?${q}`, { headers }));
 });
 
 deviceRoutes.get('/devices/:id/screenshot', async (c) => {

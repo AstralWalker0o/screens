@@ -256,3 +256,69 @@ func TestConnectURL(t *testing.T) {
 		}
 	}
 }
+
+type captureRouter struct{ got chan [2]string }
+
+func (r *captureRouter) Inbound(ops.Sink, *proto.Stream) {}
+func (r *captureRouter) SessionClosed(ops.Sink)          {}
+func (r *captureRouter) InboundBytes(_ ops.Sink, id string, b []byte) {
+	r.got <- [2]string{id, string(b)}
+}
+
+func TestBinaryStreams(t *testing.T) {
+	fastTimers(t)
+	id := identity.NewForTest("gw_1")
+	h := newTestHub(t, id, func(int32) int { return 0 })
+	reg := ops.New()
+	reg.Register("emit", func(ctx context.Context, _ json.RawMessage) (any, error) {
+		return map[string]any{}, ops.SinkFrom(ctx).SendStreamBytes(ctx, "s_1", []byte{0, 1, 2, 0xff})
+	})
+	router := &captureRouter{got: make(chan [2]string, 4)}
+	l := New(Options{
+		CentralURL: h.srv.URL, Identity: h.id, Logger: slog.New(slog.NewTextHandler(io.Discard, nil)),
+		Registry: reg, Hello: func() any { return map[string]any{"t": "hello"} }, Workers: 2, Streams: router,
+	})
+	ctx, cancel := context.WithCancel(context.Background())
+	done := make(chan struct{})
+	go func() { l.Run(ctx); close(done) }()
+	t.Cleanup(func() { cancel(); <-done })
+	c := <-h.conns
+	readFrame(t, c) // hello
+
+	// Before the hub opts in: base64 text frame.
+	write(t, c, map[string]any{"t": "req", "id": "a", "op": "emit"})
+	m := readUntil(t, c, func(m map[string]any) bool { return m["t"] == "stream" })
+	if m["kind"] != "binary" || m["data_b64"] != "AAEC/w==" {
+		t.Fatalf("fallback frame %v", m)
+	}
+	// Hub opts in via welcome.binary_streams.
+	write(t, c, map[string]any{"t": "welcome", "site_id": "s", "server_time": time.Now().UnixMilli(), "config": map[string]any{}, "binary_streams": true})
+	write(t, c, map[string]any{"t": "req", "id": "b", "op": "emit"})
+	rctx, rcancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer rcancel()
+	for {
+		typ, b, err := c.Read(rctx)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if typ == websocket.MessageBinary {
+			gotID, payload, ok := proto.DecodeBinaryStream(b)
+			if !ok || gotID != "s_1" || string(payload) != string([]byte{0, 1, 2, 0xff}) {
+				t.Fatalf("binary frame %v %q %v", ok, gotID, payload)
+			}
+			break
+		}
+	}
+	// Hub → gateway binary frame reaches the router.
+	if err := c.Write(context.Background(), websocket.MessageBinary, proto.EncodeBinaryStream("s_9", []byte("ctl"))); err != nil {
+		t.Fatal(err)
+	}
+	select {
+	case g := <-router.got:
+		if g[0] != "s_9" || g[1] != "ctl" {
+			t.Fatalf("router got %v", g)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("binary frame not routed")
+	}
+}

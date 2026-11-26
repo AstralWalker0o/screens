@@ -10,7 +10,7 @@ import { classify, compilePolicies, refreshLists } from '../dns/compile';
 import { buildDnsConfig } from '../dns/config';
 import { certNotAfter, issueCertificate, upsertRecord, zoneId } from '../acme/acme';
 import type { Env } from '../env';
-import { b64Encode, openJson, sealJson, signAgentUrl } from '../lib/crypto';
+import { b64Decode, b64Encode, openJson, sealJson, signAgentUrl } from '../lib/crypto';
 import {
   audit, createJob, finishJob, getAppSettings, kioskPinHash, raiseAlert, resolveAlert, type Row, siteMdns, siteSettings, toAutomation, toDevice, toDiscovered,
 } from '../lib/db';
@@ -18,6 +18,7 @@ import { chunk, dayKey, hourKey, HttpError, normMac, now, parseJson, rid, sleep 
 import { scoreDevice } from '../privacy/score';
 import { seed } from '../lib/seed';
 import { RelayStream } from './stream';
+import { checkControl, mirrorOptions, type MirrorOptions, RESET_VIDEO, SCRCPY_DEVICE_PATH, SCRCPY_R2_KEY, SCRCPY_SHA256, ScrcpyVideoParser, serverCommand, type StreamMeta } from './mirror';
 
 interface Pending { resolve: (v: any) => void; reject: (e: Error) => void; timer: ReturnType<typeof setTimeout> }
 
@@ -30,6 +31,9 @@ export class SiteHub extends DurableObject<Env> {
   private sql: SqlStorage;
   private pending = new Map<string, Pending>();
   private streams = new Map<string, RelayStream>();
+  /** Byte-oriented relay streams (adb.stream for mirroring), keyed by stream id. */
+  private byteStreams = new Map<string, { onBytes: (b: Uint8Array) => void; onClose: (reason: string) => void }>();
+  private mirrors = new Map<string, MirrorSession>();
   private seq = 0;
   private names: Map<string, string> | null = null;
 
@@ -90,6 +94,14 @@ export class SiteHub extends DurableObject<Env> {
       await this.scheduleTick(5_000);
     } else if (url.pathname === '/live') {
       this.ctx.acceptWebSocket(pair[1], ['live']);
+    } else if (url.pathname === '/mirror') {
+      const deviceId = url.searchParams.get('device') ?? '';
+      if (!/^dev_[a-z0-9]+$/.test(deviceId)) return new Response('bad device', { status: 400 });
+      this.ctx.acceptWebSocket(pair[1], ['mirror', `m:${deviceId}`]);
+      pair[1].serializeAttachment({ device_id: deviceId });
+      const opts = mirrorOptions(url.searchParams);
+      const actor = req.headers.get('x-actor') ?? 'unknown';
+      this.ctx.waitUntil(this.mirrorJoin(deviceId, pair[1], opts, actor));
     } else {
       return new Response('not found', { status: 404 });
     }
@@ -113,7 +125,22 @@ export class SiteHub extends DurableObject<Env> {
   }
 
   async webSocketMessage(ws: WebSocket, message: string | ArrayBuffer) {
-    if (!this.ctx.getTags(ws).includes('agent')) return; // live sockets are receive-only
+    const tags = this.ctx.getTags(ws);
+    if (tags.includes('mirror')) return this.mirrorViewerMessage(ws, message);
+    if (!tags.includes('agent')) return; // live sockets are receive-only
+    if (typeof message !== 'string') {
+      // Binary stream frame: 0x01, id length, id, payload (docs/MIRROR.md).
+      const b = new Uint8Array(message);
+      if (b.length < 2 || b[0] !== 0x01 || b.length < 2 + b[1]) return;
+      const id = new TextDecoder().decode(b.subarray(2, 2 + b[1]));
+      const payload = b.subarray(2 + b[1]);
+      const bs = this.byteStreams.get(id);
+      if (bs) { bs.onBytes(payload); return; }
+      const rs = this.streams.get(id);
+      if (rs) { rs.deliver(b64Encode(payload)); return; }
+      ws.send(JSON.stringify({ t: 'stream', stream: id, kind: 'close', code: 1011, reason: 'unknown stream' }));
+      return;
+    }
     let frame: any;
     try { frame = JSON.parse(typeof message === 'string' ? message : new TextDecoder().decode(message)); } catch { return; }
     switch (frame.t) {
@@ -129,6 +156,12 @@ export class SiteHub extends DurableObject<Env> {
       }
       case 'evt': await this.onEvent(frame.type, frame.data ?? {}); break;
       case 'stream': {
+        const bs = this.byteStreams.get(frame.stream);
+        if (bs) {
+          if (frame.kind === 'close') bs.onClose(frame.reason || 'closed');
+          else if (frame.data_b64) bs.onBytes(b64Decode(frame.data_b64));
+          return;
+        }
         const s = this.streams.get(frame.stream);
         if (!s) { if (frame.kind !== 'close') ws.send(JSON.stringify({ t: 'stream', stream: frame.stream, kind: 'close', code: 1011, reason: 'unknown stream' })); return; }
         if (frame.kind === 'close') s.remoteClosed('closed by device');
@@ -144,11 +177,18 @@ export class SiteHub extends DurableObject<Env> {
   async webSocketError(ws: WebSocket) { await this.onSocketGone(ws); }
 
   private async onSocketGone(ws: WebSocket) {
-    if (!this.ctx.getTags(ws).includes('agent')) return;
+    const tags = this.ctx.getTags(ws);
+    if (tags.includes('mirror')) {
+      const id = (ws.deserializeAttachment() as { device_id?: string } | null)?.device_id;
+      if (id && !this.ctx.getWebSockets(`m:${id}`).some((v) => v !== ws && v.readyState === WebSocket.OPEN)) this.mirrorStop(id, 'last viewer left');
+      return;
+    }
+    if (!tags.includes('agent')) return;
     if (this.ctx.getWebSockets('agent').some((s) => s !== ws)) return; // replaced by a newer connection
     for (const [, p] of this.pending) { clearTimeout(p.timer); p.reject(new AdapterError('unreachable', 'Gateway disconnected')); }
     this.pending.clear();
     for (const s of this.streams.values()) s.remoteClosed('gateway disconnected');
+    for (const b of [...this.byteStreams.values()]) b.onClose('gateway disconnected');
     const att = ws.deserializeAttachment() as { gateway_id?: string } | null;
     if (att?.gateway_id) await this.env.DB.prepare("UPDATE gateways SET status = 'offline', last_seen = ? WHERE id = ? AND status != 'revoked'").bind(now(), att.gateway_id).run();
     this.setKv('offline_since', now());
@@ -195,8 +235,9 @@ export class SiteHub extends DurableObject<Env> {
     const site = await this.site();
     const mdns = siteMdns(site);
     const dns = await buildDnsConfig(this.env, this.siteId, this.origin);
+    this.setKv('caps', h.caps ?? []);
     ws.send(JSON.stringify({
-      t: 'welcome', site_id: this.siteId, server_time: now(),
+      t: 'welcome', site_id: this.siteId, server_time: now(), binary_streams: (h.caps ?? []).includes('binary_streams'),
       config: { dns, mdns, telemetry: { dns_batch_ms: 5000, metrics_ms: 60000, neighbors_ms: 300000 } },
     }));
     this.setKv('offline_since', null);
@@ -687,6 +728,124 @@ export class SiteHub extends DurableObject<Env> {
     return { devices: report };
   }
 
+  // ---------------------------------------------------------------- live screen mirroring (docs/MIRROR.md)
+  private sendStreamBytes(id: string, bytes: Uint8Array) {
+    const ws = this.agent();
+    if (!ws) throw new HttpError(503, 'gateway_offline', 'The site gateway is offline');
+    if (this.kv<string[]>('caps', []).includes('binary_streams')) {
+      const idb = new TextEncoder().encode(id);
+      const f = new Uint8Array(2 + idb.length + bytes.length);
+      f[0] = 0x01; f[1] = idb.length; f.set(idb, 2); f.set(bytes, 2 + idb.length);
+      ws.send(f);
+    } else {
+      ws.send(JSON.stringify({ t: 'stream', stream: id, kind: 'binary', data_b64: b64Encode(bytes) }));
+    }
+  }
+
+  private mirrorBroadcast(deviceId: string, msg: string | Uint8Array) {
+    for (const v of this.ctx.getWebSockets(`m:${deviceId}`)) { try { v.send(msg); } catch { /* closed */ } }
+  }
+
+  private mirrorStatus(deviceId: string, state: 'starting' | 'streaming' | 'ended' | 'error', message?: string, to?: WebSocket) {
+    const msg = JSON.stringify({ type: 'status', state, ...(message ? { message } : {}) });
+    if (to) { try { to.send(msg); } catch { /* */ } } else this.mirrorBroadcast(deviceId, msg);
+  }
+
+  private async mirrorJoin(deviceId: string, ws: WebSocket, opts: MirrorOptions, actor: string) {
+    const existing = this.mirrors.get(deviceId);
+    if (existing) {
+      this.mirrorStatus(deviceId, existing.state, undefined, ws);
+      if (existing.meta) ws.send(JSON.stringify({ type: 'meta', ...existing.meta }));
+      // Late joiner: replay the latest config and ask the encoder for a fresh keyframe.
+      if (existing.state === 'streaming') {
+        if (existing.parser.lastConfig) ws.send(existing.parser.lastConfig);
+        try { this.sendStreamBytes(existing.control, RESET_VIDEO); } catch { /* */ }
+      }
+      return;
+    }
+    const session = new MirrorSession(deviceId, opts);
+    this.mirrors.set(deviceId, session);
+    this.mirrorStatus(deviceId, 'starting');
+    try {
+      await this.mirrorStart(session, actor);
+    } catch (e: any) {
+      this.mirrorStatus(deviceId, 'error', e?.message ?? String(e));
+      this.mirrorStop(deviceId, 'start failed');
+      for (const v of this.ctx.getWebSockets(`m:${deviceId}`)) { try { v.close(1011, 'mirroring failed'); } catch { /* */ } }
+    }
+  }
+
+  private async mirrorStart(m: MirrorSession, actor: string) {
+    const row = await this.deviceRow(m.deviceId);
+    if (row.kind !== 'android' || !row.ip) throw new AdapterError('not_supported', 'Live mirroring is available for Android TV devices');
+    if (!this.kv<string[]>('caps', []).includes('adb_stream')) {
+      throw new AdapterError('not_supported', 'This site gateway is too old for live mirroring. Update it from the site\'s Gateway tab (needs v0.2.0 or later).');
+    }
+    const serial = `${row.ip}:${row.port || 5555}`;
+    const sh = (cmd: string, t = 20_000) => this.gw<{ stdout: string }>('adb.shell', { serial, cmd, timeout_ms: t }, t + 5_000);
+    // 1. scrcpy server on the device (pushed from R2 when missing or outdated).
+    const have = (await sh(`sha256sum ${SCRCPY_DEVICE_PATH} 2>/dev/null | cut -d' ' -f1`)).stdout.trim();
+    if (have !== SCRCPY_SHA256) {
+      if (!(await this.env.FILES.head(SCRCPY_R2_KEY))) throw new AdapterError('not_ready', 'The scrcpy server has not been published to storage yet (tools/vendor-upload.sh).');
+      const url = await signAgentUrl(this.env.SIGNING_SECRET, this.origin, 'GET', SCRCPY_R2_KEY, 10 * 60_000);
+      await this.gw('adb.push', { serial, url, sha256: SCRCPY_SHA256, remote_path: SCRCPY_DEVICE_PATH }, 120_000);
+    }
+    if (!this.mirrors.has(m.deviceId)) return; // viewer left while we were busy
+    // 2. Start it and connect video then control (the server accepts them in that order).
+    await sh(serverCommand(m.scid, m.opts));
+    const service = `localabstract:scrcpy_${m.scid}`;
+    const parser = m.parser = new ScrcpyVideoParser(
+      (unit) => this.mirrorBroadcast(m.deviceId, unit),
+      (meta) => {
+        const changed = !m.meta || m.meta.width !== meta.width || m.meta.height !== meta.height;
+        m.meta = meta;
+        if (changed) this.mirrorBroadcast(m.deviceId, JSON.stringify({ type: 'meta', ...meta }));
+      },
+    );
+    this.byteStreams.set(m.video, {
+      onBytes: (b) => {
+        try { parser.push(b); } catch (e: any) { this.mirrorStatus(m.deviceId, 'error', e.message); this.mirrorStop(m.deviceId, 'parse error'); }
+      },
+      onClose: (reason) => { if (this.mirrors.get(m.deviceId) === m) { this.mirrorStatus(m.deviceId, 'ended', `Stream closed: ${reason}`); this.mirrorStop(m.deviceId, reason); } },
+    });
+    this.byteStreams.set(m.control, { onBytes: () => undefined, onClose: () => undefined });
+    let lastErr: unknown = null;
+    for (let i = 0; i < 24 && this.mirrors.get(m.deviceId) === m; i++) {
+      try { await this.gw('adb.stream', { stream: m.video, serial, service }, 8_000); lastErr = null; break; }
+      catch (e) { lastErr = e; await sleep(250); }
+    }
+    if (lastErr) throw new AdapterError('failed', `Could not connect to the screen stream: ${(lastErr as Error).message}`);
+    await this.gw('adb.stream', { stream: m.control, serial, service }, 8_000);
+    m.state = 'streaming';
+    this.mirrorStatus(m.deviceId, 'streaming');
+    await audit(this.env, actor, 'device.mirror', { target_type: 'device', target_id: m.deviceId, site_id: this.siteId, details: m.opts });
+  }
+
+  private mirrorViewerMessage(ws: WebSocket, message: string | ArrayBuffer) {
+    const id = (ws.deserializeAttachment() as { device_id?: string } | null)?.device_id;
+    if (!id) return;
+    if (typeof message === 'string') {
+      try { if (JSON.parse(message).type === 'ping') ws.send(JSON.stringify({ type: 'pong' })); } catch { /* */ }
+      return;
+    }
+    const m = this.mirrors.get(id);
+    if (!m || m.state !== 'streaming') return;
+    const b = new Uint8Array(message);
+    const err = checkControl(b);
+    if (err) { try { ws.send(JSON.stringify({ type: 'status', state: 'streaming', message: `Ignored input: ${err}` })); } catch { /* */ } return; }
+    try { this.sendStreamBytes(m.control, b); } catch { /* gateway gone; the video close will end the session */ }
+  }
+
+  private mirrorStop(deviceId: string, _reason: string) {
+    const m = this.mirrors.get(deviceId);
+    if (!m) return;
+    this.mirrors.delete(deviceId);
+    for (const id of [m.video, m.control]) {
+      this.byteStreams.delete(id);
+      try { this.sendFrame({ t: 'stream', stream: id, kind: 'close', code: 1000, reason: 'mirroring stopped' }); } catch { /* */ }
+    }
+  }
+
   // ---------------------------------------------------------------- Screens Launcher (kiosk + welcome)
   /** Config JSON for the Android TV launcher (docs/LAUNCHER.md), base64-encoded for `am broadcast --es`. */
   async launcherConfigB64(): Promise<string> {
@@ -1071,4 +1230,18 @@ export function statusForCode(code: string): number {
     pairing: 409, unauthorized: 409, adb_unauthorized: 409, adb_offline: 409, not_ready: 409, not_configured: 409,
   };
   return m[code] ?? 500;
+}
+
+class MirrorSession {
+  state: 'starting' | 'streaming' = 'starting';
+  meta: StreamMeta | null = null;
+  parser!: ScrcpyVideoParser;
+  readonly scid: string;
+  readonly video: string;
+  readonly control: string;
+  constructor(public deviceId: string, public opts: MirrorOptions) {
+    this.scid = ((crypto.getRandomValues(new Uint32Array(1))[0] & 0x7fffffff) >>> 0).toString(16).padStart(8, '0');
+    this.video = `mv_${this.scid}`;
+    this.control = `mc_${this.scid}`;
+  }
 }

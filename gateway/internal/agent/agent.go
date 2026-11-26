@@ -136,6 +136,7 @@ func (a *Agent) Run(parent context.Context) error {
 	a.mdns = mdns.New(a.comp("mdns"), a.own)
 	a.relay = relay.NewManager(a.comp("relay"))
 	a.adb = adb.New(data, a.fetch, a.comp("adb"))
+	a.relay.OpenADB = a.adb.OpenService
 	a.disc = discovery.New(a.own)
 	a.reg = ops.New()
 	a.registerOps()
@@ -306,9 +307,9 @@ func (a *Agent) linkLoop(ctx context.Context) {
 }
 
 func (a *Agent) caps() []string {
-	c := []string{"dns", "dot", "mdns", "ssdp", "discovery", "wol", "http", "ws", "tcp", "update"}
+	c := []string{"dns", "dot", "mdns", "ssdp", "discovery", "wol", "http", "ws", "tcp", "update", "binary_streams"}
 	if a.adb.Available() {
-		c = append([]string{"adb"}, c...)
+		c = append([]string{"adb", "adb_stream"}, c...)
 	}
 	return c
 }

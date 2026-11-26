@@ -92,6 +92,13 @@ Android TV / Google TV devices) and Sonos speakers, across many sites.
 4. Every query is reported back. The site hub stores it and the dashboards,
    the privacy score and "new domain" detection read it.
 
+## Live screen mirroring
+
+The cloud pushes the scrcpy server (checksum-verified) to an Android box and starts it. The gateway's
+`adb.stream` relays the box's local scrcpy socket as raw bytes. SiteHub turns the video into aligned H.264 units
+and fans them out to each viewer's browser, which decodes them with WebCodecs. Viewer input goes back as
+allow-listed scrcpy control messages. See [MIRROR.md](MIRROR.md).
+
 ## mDNS / SSDP reflector
 
 You configure it per site: pick interfaces and add rules

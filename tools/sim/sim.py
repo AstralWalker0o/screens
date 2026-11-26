@@ -221,6 +221,8 @@ class FakeAndroid:
         self.awake = True
         self.home = 'com.google.android.tvlauncher'
         self.appops = {}
+        self.files_sha = {}
+        self.scrcpy = None
 
     def shell(self, cmd):
         """Very small emulation of the commands the Screens Android driver sends."""
@@ -253,6 +255,15 @@ class FakeAndroid:
                 out.append(f'Broadcast completed: result=1, data="status:{st}"')
             else:
                 out.append('Broadcast completed: result=0')
+        elif cmd.startswith('sha256sum /data/local/tmp/'):
+            path = cmd.split()[1]
+            out.append(self.files_sha.get(path, ''))
+        elif 'com.genymobile.scrcpy.Server' in cmd:
+            m = re.search(r'scid=([0-9a-f]{8})', cmd)
+            jar = re.search(r'CLASSPATH=(\S+)', cmd).group(1)
+            if m and jar in self.files_sha:
+                self.scrcpy = {'scid': m.group(1), 'conns': 0, 'started': time.time()}
+                log('android.scrcpy_start', ip=self.ip, scid=m.group(1), cmd=cmd[:200])
         elif cmd.startswith('dumpsys appops'):
             out += ['  Uid u0a12:', '    Package com.google.android.katniss:', '      RECORD_AUDIO (allow):', '        Access: [top-s] 2026-11-26 09:58:12.345 (-2m14s345ms) duration=+3s']
         else:
@@ -291,10 +302,47 @@ class FakeAndroid:
         log('android.shell', ip=self.ip, cmd=cmd[:300])
         return ('\n'.join(out) + ('\n' if out else '')).encode()
 
+SAMPLE = None
+
+def scrcpy_video(conn, lid, streams, send):
+    """Serve scrcpy v5 framing over the adb stream, looping the H.264 sample at its frame rate."""
+    global SAMPLE
+    if SAMPLE is None:
+        here = os.path.dirname(os.path.abspath(__file__))
+        SAMPLE = (open(os.path.join(here, 'sample.h264'), 'rb').read(), json.load(open(os.path.join(here, 'sample.json'))))
+    data, idx = SAMPLE
+    st = streams.get(lid)
+    def out(b):
+        # respect adb flow control: one WRTE in flight, wait for OKAY
+        for i in range(0, len(b), 200000):
+            if st['closed']: return False
+            st['acked'].wait(5)
+            if st['closed']: return False
+            st['acked'].clear()
+            send(conn, A_WRTE, lid, st['remote'], b[i:i + 200000])
+        return True
+    name = b'SHIELD Android TV'.ljust(64, b'\0')
+    if not out(b'\0' + name + struct.pack('>I', 0x68323634) + struct.pack('>III', 0x80000000, idx['width'], idx['height'])): return
+    t0 = time.time(); loop = 0
+    while not st['closed']:
+        for p in idx['packets']:
+            payload = data[p['start']:p['end']]
+            if p['type'] == 'config':
+                hdr = struct.pack('>QI', 1 << 62, len(payload))
+            else:
+                pts = p['pts_us'] + loop * 3_000_000
+                hdr = struct.pack('>QI', pts | ((1 << 61) if p['type'] == 'key' else 0), len(payload))
+                delay = t0 + pts / 1e6 - time.time()
+                if delay > 0: time.sleep(delay)
+            if not out(hdr + payload): return
+        loop += 1
+
 def adbd(ip, dev):
     srv = socket.socket(); srv.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1); srv.bind((ip, 5555)); srv.listen(8)
+    send_lock = threading.Lock()
     def send(conn, cmd, a0, a1, data=b''):
-        conn.sendall(struct.pack('<6I', cmd, a0, a1, len(data), sum(data) & 0xffffffff, cmd ^ 0xffffffff) + data)
+        with send_lock:
+            conn.sendall(struct.pack('<6I', cmd, a0, a1, len(data), sum(data) & 0xffffffff, cmd ^ 0xffffffff) + data)
     def recv(conn):
         h = recv_exact(conn, 24)
         cmd, a0, a1, n, _, _ = struct.unpack('<6I', h)
@@ -316,6 +364,22 @@ def adbd(ip, dev):
                         streams[lid] = {'remote': a0, 'need': int(m.group(1)), 'got': 0, 'kind': 'install'}
                         log('android.install_start', ip=ip, size=int(m.group(1)))
                         continue
+                    if svc == 'sync:':
+                        streams[lid] = {'remote': a0, 'kind': 'sync', 'buf': b'', 'file': None, 'data': bytearray()}
+                        continue
+                    m2 = re.match(r'localabstract:scrcpy_([0-9a-f]{8})$', svc)
+                    if m2:
+                        sc = dev.scrcpy
+                        if not sc or sc['scid'] != m2.group(1):
+                            send(conn, A_CLSE, lid, a0); streams.pop(lid, None); continue
+                        sc['conns'] += 1
+                        if sc['conns'] == 1:
+                            streams[lid] = {'remote': a0, 'kind': 'video', 'acked': threading.Event(), 'closed': False}
+                            streams[lid]['acked'].set()
+                            threading.Thread(target=scrcpy_video, args=(conn, lid, streams, send), daemon=True).start()
+                        else:
+                            streams[lid] = {'remote': a0, 'kind': 'control', 'got': bytearray()}
+                        continue
                     if svc.startswith('shell:') or svc.startswith('exec:'):
                         c = svc.split(':', 1)[1]
                         if c.startswith('screencap'):
@@ -331,9 +395,40 @@ def adbd(ip, dev):
                         send(conn, A_CLSE, lid, a0)
                 elif cmd == A_OKAY:
                     if a1 in streams and streams[a1]['kind'] == 'out': pump(conn, a1, streams)
+                    elif a1 in streams and streams[a1]['kind'] == 'video': streams[a1]['acked'].set()
                 elif cmd == A_WRTE:
                     s = streams.get(a1)
                     send(conn, A_OKAY, a1, a0)
+                    if s and s['kind'] == 'control':
+                        s['got'] += data
+                        log('android.scrcpy_control', ip=ip, hex=data.hex())
+                        continue
+                    if s and s['kind'] == 'sync':
+                        s['buf'] += data
+                        while len(s['buf']) >= 8:
+                            tag = s['buf'][:4]; n = struct.unpack('<I', s['buf'][4:8])[0]
+                            WITH_BODY = (b'STAT', b'STA2', b'LST2', b'SEND', b'DATA')
+                            if tag in WITH_BODY and len(s['buf']) < 8 + n: break
+                            body = s['buf'][8:8 + n] if tag in WITH_BODY else b''
+                            s['buf'] = s['buf'][8 + (n if tag in WITH_BODY else 0):]
+                            if tag == b'STAT':
+                                send(conn, A_WRTE, a1, a0, b'STAT' + struct.pack('<III', 0, 0, 0))
+                            elif tag in (b'STA2', b'LST2'):
+                                # stat_v2: error=ENOENT, everything else zero (72 bytes incl. id)
+                                send(conn, A_WRTE, a1, a0, tag + struct.pack('<IQQIIIIQqqq', 2, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0))
+                            elif tag == b'SEND':
+                                s['file'] = body.decode().split(',')[0]; s['data'] = bytearray()
+                            elif tag == b'DATA':
+                                s['data'] += body
+                            elif tag == b'DONE':
+                                dev.files_sha[s['file']] = hashlib.sha256(bytes(s['data'])).hexdigest()
+                                log('android.push', ip=ip, path=s['file'], size=len(s['data']))
+                                send(conn, A_WRTE, a1, a0, b'OKAY' + struct.pack('<I', 0))
+                            elif tag == b'QUIT':
+                                send(conn, A_CLSE, a1, a0); streams.pop(a1, None); break
+                            else:
+                                break
+                        continue
                     if s and s['kind'] == 'install':
                         s['got'] += len(data)
                         if s['got'] >= s['need']:
@@ -342,7 +437,10 @@ def adbd(ip, dev):
                             s['kind'] = 'out'; s['out'] = [b'Success\n']
                             pump(conn, a1, streams)
                 elif cmd == A_CLSE:
-                    streams.pop(a1, None)
+                    st_ = streams.pop(a1, None)
+                    if st_ and st_.get('kind') == 'video':
+                        st_['closed'] = True; st_['acked'].set()
+                        log('android.scrcpy_video_closed', ip=ip)
         except Exception:
             pass
         finally:

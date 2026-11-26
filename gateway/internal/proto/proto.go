@@ -110,6 +110,31 @@ type Welcome struct {
 	SiteID     string        `json:"site_id"`
 	ServerTime int64         `json:"server_time"`
 	Config     WelcomeConfig `json:"config"`
+	// BinaryStreams: the hub accepts and sends binary stream frames (see EncodeBinaryStream).
+	BinaryStreams bool `json:"binary_streams,omitempty"`
+}
+
+// BinaryStreamTag is the first byte of a binary stream-data WebSocket frame.
+const BinaryStreamTag = 0x01
+
+// EncodeBinaryStream builds a binary frame: 0x01, len(id), id, payload.
+func EncodeBinaryStream(id string, payload []byte) []byte {
+	b := make([]byte, 0, 2+len(id)+len(payload))
+	b = append(b, BinaryStreamTag, byte(len(id)))
+	b = append(b, id...)
+	return append(b, payload...)
+}
+
+// DecodeBinaryStream parses a binary stream-data frame.
+func DecodeBinaryStream(b []byte) (id string, payload []byte, ok bool) {
+	if len(b) < 2 || b[0] != BinaryStreamTag {
+		return "", nil, false
+	}
+	n := int(b[1])
+	if n == 0 || len(b) < 2+n {
+		return "", nil, false
+	}
+	return string(b[2 : 2+n]), b[2+n:], true
 }
 
 // WelcomeConfig is the initial configuration carried by welcome.

@@ -47,5 +47,8 @@ if ! curl -sf --noproxy '*' http://127.0.0.1:8787/healthz >/dev/null; then
   curl -s --noproxy '*' "http://127.0.0.1:8787/__scheduled?cron=*+*+*+*+*" >/dev/null   # seed + build blocklists
 fi
 (cd "$ROOT/gateway" && ./build.sh >/dev/null)
+"$ROOT/tools/vendor-upload.sh" --local >/dev/null      # scrcpy server for mirroring
+(cd "$ROOT/central" && npx vite build >/dev/null)       # dashboard for the UI mirror test
 trap 'kill $SIM ${WR:-} 2>/dev/null || true' EXIT
 python3 "$ROOT/tools/e2e/e2e.py"
+python3 "$ROOT/tools/e2e/ui_mirror.py"   # real dashboard player against the real chain

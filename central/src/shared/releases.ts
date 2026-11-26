@@ -17,6 +17,20 @@ export interface Release {
 
 export const RELEASES: Release[] = [
   {
+    version: '0.3.0',
+    date: '2026-11-26',
+    title: 'Live screen mirroring',
+    summary: 'Watch and control an Android TV box\'s screen live from the dashboard.',
+    components: { gateway: '0.2.0', launcher: '1.0.0' },
+    notes: [
+      { kind: 'new', text: 'Live screen mirroring for Android TV boxes (NVIDIA Shield and others), powered by the open-source scrcpy server. H.264 is decoded in your browser at up to 1080p/60 fps.' },
+      { kind: 'new', text: 'Control the live picture directly: click or tap to touch, scroll, type, and use Back / Home / Recent apps / volume / power buttons. "Screen off on TV" keeps mirroring with the TV panel dark.' },
+      { kind: 'new', text: 'Several people can watch the same box at once. New viewers get a fresh keyframe immediately.' },
+      { kind: 'improved', text: 'Site gateways relay binary data natively instead of base64, a third less bandwidth for streams.' },
+      { kind: 'security', text: 'The gateway only opens scrcpy\'s own local socket on a device, the cloud forwards only known input message types, and the scrcpy server is checksum-verified against the upstream release before it is pushed to a device.' },
+    ],
+  },
+  {
     version: '0.2.0',
     date: '2026-11-26',
     title: 'Rental launcher, privacy controls and Sonos extras',

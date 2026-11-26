@@ -11,6 +11,8 @@ import * as F from './data';
 import { D, H, M, NOW, S } from './data';
 import { allDomainStats, buildTraffic, makeEntry, resetLiveRng, seedLog, summarize, type SiteCtx } from './dns';
 import { applyKey, applyTap, renderScreen, type ScreenState } from './screens';
+import { startMockMirror } from './mirror';
+import type { MirrorConnection, MirrorHandlers, MirrorParams } from '../api';
 import { between, hex } from './rand';
 
 const clone = <T,>(v: T): T => (v === undefined ? v : structuredClone(v));
@@ -1083,3 +1085,25 @@ export function live(siteId: string, onEvent: (e: LiveEvent) => void): () => voi
 }
 
 
+
+export function mirror(id: string, params: MirrorParams, handlers: MirrorHandlers): MirrorConnection {
+  const d = db.devices.find((x) => x.id === id);
+  const fail = (message: string): MirrorConnection => {
+    let closed = false;
+    setTimeout(() => !closed && handlers.onText({ type: 'status', state: 'starting' }), 50);
+    setTimeout(() => !closed && handlers.onText({ type: 'status', state: 'error', message }), 900);
+    return { send: () => undefined, close: () => { closed = true; } };
+  };
+  if (!d || d.kind !== 'android') return fail('Live view is only available for Android TV devices.');
+  if (d.status === 'offline') return fail(`${d.name} is offline, so the live view can’t start.`);
+  return startMockMirror({
+    deviceName: d.model ?? d.name,
+    params,
+    handlers,
+    getScreen: () => screenFor(id),
+    setScreen: (st) => {
+      screens.set(id, st);
+      d.current_app = st.app;
+    },
+  });
+}

@@ -211,3 +211,52 @@ describe('sonos favorites', () => {
     expect(f[1]).toMatchObject({ title: 'Chill', kind: 'playlist' });
   });
 });
+
+import { checkControl, mirrorOptions, ScrcpyVideoParser, serverCommand } from '../src/worker/hub/mirror';
+describe('scrcpy mirroring', () => {
+  const be32 = (n: number) => { const b = new Uint8Array(4); new DataView(b.buffer).setUint32(0, n); return b; };
+  const cat = (...p: Uint8Array[]) => { const out = new Uint8Array(p.reduce((a, x) => a + x.length, 0)); let o = 0; for (const x of p) { out.set(x, o); o += x.length; } return out; };
+  const pkt = (hi: number, lo: number, payload: number[]) => cat(be32(hi), be32(lo), be32(payload.length), new Uint8Array(payload));
+  const name = new Uint8Array(64); name.set(new TextEncoder().encode('SHIELD Android TV'));
+  const stream = cat(new Uint8Array([0]), name, be32(0x68323634), cat(be32(0x80000000), be32(1280), be32(720)),
+    pkt(0x40000000, 0, [0, 0, 0, 1, 0x67, 0x64, 0, 0x1f]),           // config (SPS)
+    pkt(0x20000000, 0, [0, 0, 0, 1, 0x65, 1, 2, 3]),                   // keyframe
+    pkt(0, 33333, [0, 0, 0, 1, 0x41, 9]),                              // delta
+    cat(be32(0x80000001), be32(720), be32(1280)));                     // rotation: new session
+  it('parses a stream fed in arbitrary chunk sizes', () => {
+    for (const chunk of [1, 3, 7, 12, 64, 1000]) {
+      const units: string[] = []; const metas: any[] = [];
+      const p = new ScrcpyVideoParser((u, k) => units.push(`${k}:${u.length}`), (m) => metas.push(m));
+      for (let i = 0; i < stream.length; i += chunk) p.push(stream.subarray(i, i + chunk));
+      expect(units).toEqual(['session:12', 'config:20', 'key:20', 'delta:18', 'session:12']);
+      expect(metas[0]).toEqual({ device_name: 'SHIELD Android TV', codec: 'h264', width: 1280, height: 720 });
+      expect(metas[1]).toMatchObject({ width: 720, height: 1280 });
+      expect(p.lastConfig?.length).toBe(20);
+    }
+  });
+  it('rejects a device-side configuration error', () => {
+    const p = new ScrcpyVideoParser(() => undefined, () => undefined);
+    expect(() => p.push(cat(new Uint8Array([0]), name, be32(1)))).toThrow(/configuration error/);
+  });
+  it('allow-lists control messages', () => {
+    const touch = new Uint8Array(32); touch[0] = 2;
+    expect(checkControl(touch)).toBeNull();
+    expect(checkControl(new Uint8Array([2, 0, 0]))).toMatch(/32 bytes/);
+    const key = new Uint8Array(14); key[0] = 0;
+    expect(checkControl(key)).toBeNull();
+    expect(checkControl(cat(new Uint8Array([1]), be32(2), new Uint8Array([104, 105])))).toBeNull();
+    expect(checkControl(cat(new Uint8Array([1]), be32(400), new Uint8Array(400)))).toMatch(/text length/);
+    expect(checkControl(new Uint8Array([17]))).toBeNull();
+    expect(checkControl(new Uint8Array([16, 0]))).toMatch(/not allowed/);   // START_APP
+    expect(checkControl(new Uint8Array([9]))).toMatch(/not allowed/);       // SET_CLIPBOARD
+  });
+  it('builds a safe server command', () => {
+    const cmd = serverCommand('0a1b2c3d', mirrorOptions(new URLSearchParams('max_size=99999&max_fps=2&bitrate=abc')));
+    expect(cmd).toContain('com.genymobile.scrcpy.Server 5.0.1 scid=0a1b2c3d');
+    expect(cmd).toContain('max_size=1920');
+    expect(cmd).toContain('max_fps=5');
+    expect(cmd).toContain('video_bit_rate=4000000');
+    expect(cmd).toContain('tunnel_forward=true');
+    expect(() => serverCommand('0a1b; reboot', mirrorOptions(new URLSearchParams()))).toThrow();
+  });
+});

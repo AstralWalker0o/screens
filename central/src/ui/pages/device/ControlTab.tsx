@@ -1,4 +1,4 @@
-import { Gamepad2, MonitorSmartphone, LayoutGrid, Info, MessageSquare, HdmiPort, Tv, Cable } from 'lucide-react';
+import { Gamepad2, MonitorSmartphone, LayoutGrid, Info, MessageSquare, HdmiPort, Tv, Cable, Radio, Camera } from 'lucide-react';
 import { useState } from 'react';
 import type { Device } from '../../../shared/types';
 import { sendCommand } from '../../lib/commands';
@@ -6,12 +6,17 @@ import { AppLauncher } from '../../components/AppLauncher';
 import { Remote } from '../../components/Remote';
 import { ScreenshotPane } from '../../components/Screenshot';
 import { SonosControl } from '../../components/SonosControl';
+import { MirrorPlayer } from '../../components/MirrorPlayer';
+import { useLocalStorage } from '../../lib/hooks';
 import { Button, Callout, Card, CardBody, CardHeader } from '../../components/ui';
-import { Input } from '../../components/forms';
+import { Input, Segmented } from '../../components/forms';
 
 export function ControlTab({ device: d }: { device: Device }) {
+  const [mode, setMode] = useLocalStorage<'live' | 'shot'>('screen.mode', 'live');
   if (d.kind === 'sonos') return <SonosControl device={d} />;
   const hasScreen = d.capabilities.includes('screenshot');
+  const canMirror = (d.capabilities as string[]).includes('mirror');
+  const live = canMirror && mode === 'live' && d.status !== 'offline';
   return (
     <div className="space-y-4">
       {d.capabilities.includes('launch') && (
@@ -31,9 +36,24 @@ export function ControlTab({ device: d }: { device: Device }) {
         </Card>
         {hasScreen ? (
           <Card>
-            <CardHeader title="Screen" icon={MonitorSmartphone} subtitle="See what’s on the TV. Click the picture to tap." />
+            <CardHeader
+              title="Screen"
+              icon={MonitorSmartphone}
+              subtitle={live ? 'Live picture from the TV. Click to tap, scroll to scroll, type while it’s focused.' : 'See what’s on the TV. Click the picture to tap.'}
+              actions={
+                canMirror && (
+                  <Segmented<'live' | 'shot'>
+                    ariaLabel="Screen view"
+                    size="sm"
+                    value={live ? 'live' : 'shot'}
+                    onChange={setMode}
+                    options={[{ value: 'live', label: 'Live', icon: Radio }, { value: 'shot', label: 'Screenshot', icon: Camera }]}
+                  />
+                )
+              }
+            />
             <CardBody>
-              <ScreenshotPane device={d} />
+              {live ? <MirrorPlayer device={d} onUseScreenshots={() => setMode('shot')} /> : <ScreenshotPane device={d} />}
               {d.capabilities.includes('toast') && <ToastBox device={d} />}
             </CardBody>
           </Card>

@@ -132,7 +132,7 @@ export interface Device {
 export type DeviceCapability =
   | 'remote' | 'text' | 'apps' | 'launch' | 'install' | 'uninstall' | 'disable' | 'clear'
   | 'screenshot' | 'tap' | 'shell' | 'reboot' | 'power' | 'volume' | 'private_dns'
-  | 'media' | 'group' | 'toast' | 'guest_reset' | 'launcher' | 'led' | 'mute' | 'eq' | 'favorites';
+  | 'media' | 'group' | 'toast' | 'guest_reset' | 'launcher' | 'led' | 'mute' | 'eq' | 'favorites' | 'mirror';
 
 export interface Discovered {
   site_id: string; ip: string; mac?: string | null; kind_guess: DeviceKind | null;

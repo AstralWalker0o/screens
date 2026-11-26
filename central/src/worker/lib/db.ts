@@ -78,7 +78,7 @@ export function siteMdns(row: Row): MdnsConfig {
 export function capabilitiesFor(kind: DeviceKind): DeviceCapability[] {
   switch (kind) {
     case 'android':
-      return ['remote', 'text', 'apps', 'launch', 'install', 'uninstall', 'disable', 'clear', 'screenshot', 'tap', 'shell', 'reboot', 'power', 'volume', 'private_dns', 'media', 'toast', 'guest_reset', 'launcher'];
+      return ['remote', 'text', 'apps', 'launch', 'install', 'uninstall', 'disable', 'clear', 'screenshot', 'tap', 'shell', 'reboot', 'power', 'volume', 'private_dns', 'media', 'toast', 'guest_reset', 'launcher', 'mirror'];
     case 'samsung':
       return ['remote', 'text', 'apps', 'launch', 'power', 'volume', 'guest_reset'];
     case 'lg':

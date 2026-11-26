@@ -74,6 +74,9 @@ type Sink interface {
 	// SendStream queues a stream frame, blocking for backpressure. It fails
 	// if the session ends or the frame is larger than the frame limit.
 	SendStream(ctx context.Context, f *proto.Stream) error
+	// SendStreamBytes queues stream data, as a binary frame when the hub
+	// supports it and as a base64 text frame otherwise.
+	SendStreamBytes(ctx context.Context, id string, data []byte) error
 	// Done is closed when the session ends.
 	Done() <-chan struct{}
 }

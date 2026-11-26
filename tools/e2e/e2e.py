@@ -115,6 +115,41 @@ else:
     for _ in range(3): s.sendto(pkt, ('224.0.0.251', 5353)); time.sleep(0.3)
 """
 
+def ws_client(path):
+    """Tiny WebSocket client: returns (recv() -> (opcode, bytes), send(bytes|str), close())."""
+    import base64 as _b64
+    host, port = BASE.split('//')[1].split(':')
+    sock = socket.create_connection((host, int(port)), timeout=10)
+    key = _b64.b64encode(os.urandom(16)).decode()
+    sock.sendall(f'GET {path} HTTP/1.1\r\nHost: {host}:{port}\r\nUpgrade: websocket\r\nConnection: Upgrade\r\nSec-WebSocket-Key: {key}\r\nSec-WebSocket-Version: 13\r\n\r\n'.encode())
+    head = b''
+    while b'\r\n\r\n' not in head: head += sock.recv(1)
+    if b' 101 ' not in head.split(b'\r\n')[0]: raise AssertionError(head[:300])
+    buf = bytearray()
+    def need(n):
+        while len(buf) < n:
+            c = sock.recv(65536)
+            if not c: raise ConnectionError('closed')
+            buf.extend(c)
+    def recv(timeout=10):
+        sock.settimeout(timeout)
+        need(2); op = buf[0] & 0x0f; n = buf[1] & 0x7f; off = 2
+        if n == 126: need(4); n = struct.unpack('>H', bytes(buf[2:4]))[0]; off = 4
+        elif n == 127: need(10); n = struct.unpack('>Q', bytes(buf[2:10]))[0]; off = 10
+        need(off + n); data = bytes(buf[off:off + n]); del buf[:off + n]
+        return op, data
+    def send(payload):
+        op = 0x1 if isinstance(payload, str) else 0x2
+        data = payload.encode() if isinstance(payload, str) else payload
+        mask = os.urandom(4); n = len(data)
+        hdr = bytes([0x80 | op]) + (bytes([0x80 | n]) if n < 126 else bytes([0x80 | 126]) + struct.pack('>H', n))
+        sock.sendall(hdr + mask + bytes(b ^ mask[i % 4] for i, b in enumerate(data)))
+    def close():
+        try: sock.sendall(bytes([0x88, 0x82]) + b'\0\0\0\0' + struct.pack('>H', 1000))
+        except Exception: pass
+        sock.close()
+    return recv, send, close
+
 def main():
     print('== setup')
     cl = api('POST', '/api/clients', {'name': 'E2E Client'})
@@ -361,6 +396,67 @@ def main():
                 check('mDNS status readable', st['status'] is not None, json.dumps(st)[:300])
         except Exception as e:
             check('section mDNS reflector completed', False, str(e)[:300])
+
+        print('== live screen mirroring')
+        try:
+            t_m = time.time()
+            recv, send, close = ws_client(f'/api/devices/{sh}/mirror?max_size=1280&max_fps=30')
+            statuses, meta, kinds, units = [], None, [], 0
+            end = time.time() + 25
+            while time.time() < end and (units < 40 or meta is None):
+                op, frame = recv(max(0.5, end - time.time()))
+                if op == 1:
+                    m = json.loads(frame)
+                    if m['type'] == 'status': statuses.append(m['state'])
+                    if m['type'] == 'meta': meta = m
+                elif op == 2:
+                    units += 1
+                    if len(frame) == 12 and frame[0] & 0x80: kinds.append('session')
+                    else:
+                        hi = struct.unpack('>I', frame[:4])[0]
+                        kinds.append('config' if hi & 0x40000000 else 'key' if hi & 0x20000000 else 'delta')
+                elif op == 8: break
+            check('mirror: scrcpy server present on the device (pushed + sha-verified when missing) and started', bool(sim_events('android.scrcpy_start', t_m)), 'no start seen')
+            check('mirror: status starting -> streaming', statuses[:2] == ['starting', 'streaming'], str(statuses))
+            check('mirror: meta from the device stream', bool(meta) and meta['codec'] == 'h264' and meta['width'] == 1280 and meta['height'] == 720 and meta['device_name'] == 'SHIELD Android TV', json.dumps(meta))
+            check('mirror: aligned units, config + keyframe first', kinds[:3] == ['session', 'config', 'key'] and kinds.count('delta') >= 30, str(kinds[:6]) + f' total={len(kinds)}')
+            touch = struct.pack('>BBqiiHHHii', 2, 0, -1, 640, 360, 1280, 720, 0xffff, 1, 1)
+            send(touch); send(bytes([16, 0]))  # second one (START_APP) must be dropped
+            ok = wait(lambda: any(e['hex'].startswith('0200ffffffffffffffff00000280') for e in sim_events('android.scrcpy_control', t_m)), 8, 0.3)
+            check('mirror: touch input reaches the device control socket', ok)
+            check('mirror: disallowed control type is not forwarded', not any(e['hex'].startswith('10') for e in sim_events('android.scrcpy_control', t_m)))
+            # second viewer: gets meta + config straight away and triggers RESET_VIDEO
+            t_v2 = time.time()
+            recv2, send2, close2 = ws_client(f'/api/devices/{sh}/mirror')
+            got2 = []
+            end = time.time() + 5
+            while time.time() < end and len(got2) < 4:
+                op, frame = recv2(max(0.5, end - time.time()))
+                got2.append((op, frame[:80]))
+            check('mirror: late joiner gets status, meta and the cached config packet', got2[0][0] == 1 and b'streaming' in got2[0][1] and got2[1][0] == 1 and b'meta' in got2[1][1] and got2[2][0] == 2, str([(o, d[:40]) for o, d in got2[:3]]))
+            ok = wait(lambda: any(e['hex'] == '11' for e in sim_events('android.scrcpy_control', t_v2)), 5, 0.3)
+            check('mirror: late joiner triggers RESET_VIDEO (fresh keyframe)', ok)
+            close2(); close()
+            ok = wait(lambda: sim_events('android.scrcpy_video_closed', t_m), 10, 0.3)
+            check('mirror: session torn down when the last viewer leaves', bool(ok))
+            # Real browser: decode the stream with WebCodecs (headless Chromium)
+            web = subprocess.Popen([sys.executable, '-m', 'http.server', '8932', '--bind', '127.0.0.1', '--directory', os.path.join(ROOT, 'tools', 'e2e', 'web')], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+            try:
+                time.sleep(1)
+                js = (
+                    "const { chromium } = require('playwright');"
+                    "(async () => { const b = await chromium.launch(); const p = await b.newPage();"
+                    f"await p.goto('http://127.0.0.1:8932/decode.html?ws=' + encodeURIComponent('ws://127.0.0.1:8787/api/devices/{sh}/mirror'));"
+                    "await p.waitForTimeout(9000); console.log(JSON.stringify(await p.evaluate(() => window.result))); await b.close(); })();"
+                )
+                npm_root = subprocess.run(['npm', 'root', '-g'], capture_output=True, text=True).stdout.strip()
+                out = subprocess.run(['node', '-e', js], capture_output=True, text=True, timeout=60, env=dict(os.environ, NODE_PATH=npm_root))
+                res = json.loads(out.stdout.strip().splitlines()[-1]) if out.stdout.strip() else {'error': out.stderr[-300:]}
+                check('mirror: real browser decodes the live stream with WebCodecs', res.get('frames', 0) >= 60 and not res.get('error'), json.dumps(res)[:300])
+            finally:
+                web.terminate()
+        except Exception as e:
+            check('section live screen mirroring completed', False, str(e)[:300])
 
         print('== automations')
         try:

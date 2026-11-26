@@ -71,6 +71,8 @@ type stream struct {
 
 // Manager owns HTTP clients and open streams.
 type Manager struct {
+	// OpenADB opens a device service through the local adb server (adb.stream).
+	OpenADB func(ctx context.Context, serial, service string) (net.Conn, error)
 	log     *slog.Logger
 	http    *clients
 	mu      sync.Mutex
@@ -238,6 +240,19 @@ func (st *stream) send(f *proto.Stream) bool {
 	return true
 }
 
+func (st *stream) sendBytes(b []byte) bool {
+	err := st.sink.SendStreamBytes(st.ctx, st.id, b)
+	if errors.Is(err, proto.ErrFrameTooLarge) {
+		st.closeAndNotify(CloseTooBig, "message exceeds frame limit")
+		return false
+	}
+	if err != nil {
+		st.shutdown(CloseGoingAway, "link closed")
+		return false
+	}
+	return true
+}
+
 func (st *stream) readWS() {
 	for {
 		typ, b, err := st.ws.Read(st.ctx)
@@ -256,13 +271,11 @@ func (st *stream) readWS() {
 			return
 		}
 		st.touch()
-		var f *proto.Stream
 		if typ == websocket.MessageText {
-			f = proto.StreamText(st.id, string(b))
-		} else {
-			f = proto.StreamBinary(st.id, base64.StdEncoding.EncodeToString(b))
-		}
-		if !st.send(f) {
+			if !st.send(proto.StreamText(st.id, string(b))) {
+				return
+			}
+		} else if !st.sendBytes(b) {
 			return
 		}
 	}
@@ -274,7 +287,7 @@ func (st *stream) readTCP() {
 		n, err := st.tcp.Read(buf)
 		if n > 0 {
 			st.touch()
-			if !st.send(proto.StreamBinary(st.id, base64.StdEncoding.EncodeToString(buf[:n]))) {
+			if !st.sendBytes(buf[:n]) {
 				return
 			}
 		}
@@ -383,6 +396,30 @@ func (m *Manager) Inbound(sink ops.Sink, f *proto.Stream) {
 	st.touch()
 	select {
 	case st.in <- msg:
+	default:
+		st.closeAndNotify(CloseInternal, "relay buffer overflow")
+	}
+}
+
+// InboundBytes handles a binary stream-data frame from the hub.
+func (m *Manager) InboundBytes(sink ops.Sink, id string, data []byte) {
+	st := m.get(id)
+	if st == nil || st.sink != sink {
+		go func() {
+			ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+			defer cancel()
+			_ = sink.SendStream(ctx, proto.StreamClose(id, CloseInternal, "unknown stream"))
+		}()
+		return
+	}
+	b := append([]byte(nil), data...)
+	if st.queued.Add(int64(len(b))) > MaxInboundQueued {
+		st.closeAndNotify(CloseInternal, "relay buffer overflow")
+		return
+	}
+	st.touch()
+	select {
+	case st.in <- inbound{data: b}:
 	default:
 		st.closeAndNotify(CloseInternal, "relay buffer overflow")
 	}
@@ -539,6 +576,40 @@ func (m *Manager) TCPOpen(ctx context.Context, raw json.RawMessage) (any, error)
 	return m.finishOpen(ctx, st, map[string]any{})
 }
 
+type adbStreamArgs struct {
+	Stream  string `json:"stream"`
+	Serial  string `json:"serial"`
+	Service string `json:"service"`
+}
+
+// ADBStream implements adb.stream: a raw byte stream to a device-side service (scrcpy) via the adb server.
+func (m *Manager) ADBStream(ctx context.Context, raw json.RawMessage) (any, error) {
+	sink := ops.SinkFrom(ctx)
+	if sink == nil {
+		return nil, proto.Errf(proto.CodeFailed, "no link session")
+	}
+	if m.OpenADB == nil {
+		return nil, proto.Errf(proto.CodeNotSupported, "adb is not available on this gateway")
+	}
+	var a adbStreamArgs
+	if err := ops.Decode(raw, &a); err != nil {
+		return nil, err
+	}
+	if !streamIDRe.MatchString(a.Stream) {
+		return nil, ops.BadArgs("invalid stream id")
+	}
+	if m.get(a.Stream) != nil {
+		return nil, ops.BadArgs("stream %q already open", a.Stream)
+	}
+	c, err := m.OpenADB(ctx, a.Serial, a.Service)
+	if err != nil {
+		return nil, err
+	}
+	st := m.newStream(sink, a.Stream, "tcp")
+	st.tcp = c
+	return m.finishOpen(ctx, st, map[string]any{})
+}
+
 type closeArgs struct {
 	Stream string `json:"stream"`
 }
@@ -563,5 +634,6 @@ func (m *Manager) Register(r *ops.Registry) {
 	r.Register("http.request", m.HTTPRequest)
 	r.Register("ws.open", m.WSOpen)
 	r.Register("tcp.open", m.TCPOpen)
+	r.Register("adb.stream", m.ADBStream)
 	r.Register("stream.close", m.StreamClose)
 }

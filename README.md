@@ -15,7 +15,7 @@ Screens is the successor to ShieldControl, rebuilt from scratch:
 | | |
 |---|---|
 | **Fleet RMM** | Clients → sites → devices, with live status, power, current app and alerts. |
-| **Remote control** | A remote (D-pad, volume, power, text) for Samsung, LG and Android TV, plus screenshots with click-to-tap on Android. For Sonos: now playing, transport, volume, grouping and LED. |
+| **Remote control** | A remote (D-pad, volume, power, text) for Samsung, LG and Android TV. **Live screen mirroring** for Android boxes (scrcpy → WebCodecs in the browser), where you click, scroll and type on the live picture, plus screenshots. For Sonos: now playing, transport, volume, grouping, EQ and favourites. |
 | **Android TV / Shield** | ADB from the browser: app inventory, launch, stop, clear, disable/enable, uninstall, install from your APK library, a shell console, reboot and Private DNS. |
 | **Privacy** | A DNS filter just for the media devices. It shows every lookup, flags ACR ("what you watch" tracking), ads and telemetry, and blocks them using maintained community lists plus a curated TV catalog. Each device gets a privacy score, a vendor checklist of settings to turn off, and a "which apps can use the microphone" list. It also alerts you when a device is bypassing the filter. |
 | **mDNS / SSDP reflector** | Lets the Sonos app (and AirPlay, Chromecast, Spotify Connect) work across VLANs, with per-service allow/deny rules managed from the dashboard. |
@@ -28,6 +28,8 @@ Screens is the successor to ShieldControl, rebuilt from scratch:
 - [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md): how it fits together, and the security model
 - [docs/PROTOCOL.md](docs/PROTOCOL.md): gateway ↔ cloud protocol
 - [docs/API.md](docs/API.md): dashboard API
+- [docs/MIRROR.md](docs/MIRROR.md): live screen mirroring
+- [docs/LAUNCHER.md](docs/LAUNCHER.md): Android TV kiosk launcher and welcome screen
 
 ## Development
 

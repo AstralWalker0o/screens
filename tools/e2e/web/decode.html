@@ -1,0 +1,58 @@
+<!doctype html>
+<meta charset="utf-8">
+<title>mirror decode test</title>
+<canvas id="c"></canvas>
+<script>
+// Independent check of the mirror wire format (docs/MIRROR.md): connect, parse units, decode with WebCodecs.
+window.result = { frames: 0, meta: null, status: [], error: null, codec: null };
+const q = new URLSearchParams(location.search);
+const ws = new WebSocket(q.get('ws'));
+ws.binaryType = 'arraybuffer';
+let decoder = null, config = null, started = false;
+const canvas = document.getElementById('c');
+function codecFromSps(b) {
+  // find SPS NAL (type 7) after a start code; profile, constraints, level follow the NAL header
+  for (let i = 0; i + 7 < b.length; i++) {
+    if (b[i] === 0 && b[i + 1] === 0 && b[i + 2] === 1 && (b[i + 3] & 0x1f) === 7) {
+      const h = (x) => x.toString(16).padStart(2, '0');
+      return 'avc1.' + h(b[i + 4]) + h(b[i + 5]) + h(b[i + 6]);
+    }
+  }
+  return null;
+}
+ws.onmessage = (ev) => {
+  if (typeof ev.data === 'string') {
+    const m = JSON.parse(ev.data);
+    if (m.type === 'meta') { result.meta = m; canvas.width = m.width; canvas.height = m.height; }
+    if (m.type === 'status') result.status.push(m.state);
+    return;
+  }
+  const u = new Uint8Array(ev.data);
+  if (u.length === 12 && (u[0] & 0x80)) return; // session packet
+  const dv = new DataView(u.buffer);
+  const hi = dv.getUint32(0), lo = dv.getUint32(4), len = dv.getUint32(8);
+  const payload = u.subarray(12, 12 + len);
+  if (hi & 0x40000000) {
+    config = payload.slice();
+    const codec = codecFromSps(config);
+    if (codec && (!decoder || result.codec !== codec)) {
+      result.codec = codec;
+      decoder = new VideoDecoder({
+        output: (f) => { canvas.getContext('2d').drawImage(f, 0, 0); f.close(); result.frames++; },
+        error: (e) => { result.error = String(e); },
+      });
+      decoder.configure({ codec, optimizeForLatency: true });
+    }
+    return;
+  }
+  const key = !!(hi & 0x20000000);
+  if (!decoder || (!started && !key)) return;
+  started = true;
+  const pts = (BigInt(hi & 0x1fffffff) << 32n) | BigInt(lo);
+  let data = payload;
+  if (config) { data = new Uint8Array(config.length + payload.length); data.set(config); data.set(payload, config.length); config = null; }
+  try { decoder.decode(new EncodedVideoChunk({ type: key ? 'key' : 'delta', timestamp: Number(pts), data })); }
+  catch (e) { result.error = String(e); }
+};
+ws.onerror = () => { result.error = 'websocket error'; };
+</script>
