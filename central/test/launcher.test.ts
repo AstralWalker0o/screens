@@ -221,11 +221,13 @@ function fakeBox(version: '1.0.0' | '2.0.0', stored: string[] = []) {
         configSha = await sha256Hex(new Uint8Array(json));
         return { stdout: `Broadcast completed: result=1, data="ok:${configSha}"\n`, exit_code: 0 };
       }
-      const w = cmd.match(/^content write --uri content:\/\/au\.supercluster\.screens\.launcher\.assets\/([0-9a-f]{64})\.(\w+) < (\S+) 2>&1; echo "@@rc=\$\?"; rm -f (\S+)$/);
+      // Like the real app: write always exits 0, the SHA check happens after the pipe closes, and the
+      // follow-up single-asset query is the only confirmation.
+      const w = cmd.match(/^content write --uri content:\/\/au\.supercluster\.screens\.launcher\.assets\/([0-9a-f]{64})\.(\w+) < (\S+) 2>&1; rm -f (\S+); content query --uri content:\/\/au\.supercluster\.screens\.launcher\.assets\/([0-9a-f]{64})\.(\w+) 2>&1$/);
       if (w) {
         const ok = tmp.get(w[3]) === w[1] && w[3] === w[4];
         if (ok) assets.add(w[1]);
-        return { stdout: ok ? '@@rc=0\n' : 'java.lang.SecurityException: sha mismatch\n@@rc=1\n', exit_code: 0 };
+        return { stdout: assets.has(w[5]) ? `Row: 0 sha256=${w[5]}, bytes=10\n` : 'No result found.\n', exit_code: 0 };
       }
       if (cmd.startsWith('content query')) return { stdout: [...assets].map((s, i) => `Row: ${i} sha256=${s}, bytes=10`).join('\n') + '\n', exit_code: 0 };
       throw new Error(`unexpected command ${cmd}`);
@@ -256,7 +258,7 @@ describe('launcher push pipeline', () => {
     expect(pushes[0].args).toMatchObject({ serial: '10.0.0.5:5555', sha256: SHA_B, remote_path: `/data/local/tmp/screens-asset-${SHA_B}.png` });
     expect(pushes[0].args.url).toMatch(new RegExp(`^https://central\\.example/agent/v1/files/launcher/assets/${SHA_B}\\.png\\?exp=\\d+&sig=[0-9a-f]{64}$`));
     const write = box.calls.find((c) => c.args.cmd?.startsWith('content write'))!;
-    expect(write.args.cmd).toBe(`content write --uri content://au.supercluster.screens.launcher.assets/${SHA_B}.png < /data/local/tmp/screens-asset-${SHA_B}.png 2>&1; echo "@@rc=$?"; rm -f /data/local/tmp/screens-asset-${SHA_B}.png`);
+    expect(write.args.cmd).toBe(`content write --uri content://au.supercluster.screens.launcher.assets/${SHA_B}.png < /data/local/tmp/screens-asset-${SHA_B}.png 2>&1; rm -f /data/local/tmp/screens-asset-${SHA_B}.png; content query --uri content://au.supercluster.screens.launcher.assets/${SHA_B}.png 2>&1`);
     expect(box.config.v).toBe(2);
     expect(box.config.home.rows[0].title).toBe('InterNik');
     expect(box.assets).toEqual(new Set([SHA_A, SHA_B]));

@@ -318,3 +318,14 @@ describe('DoT hostnames', () => {
     expect(isDotLabel('beachhouse')).toBe(false);
   });
 });
+
+describe('am broadcast output as real Android prints it', () => {
+  it('reads unescaped JSON in data="…" up to the last quote', async () => {
+    const { parseBroadcast } = await import('../src/worker/adapters/launcher');
+    const real = 'Broadcasting: Intent { act=au.supercluster.screens.launcher.STATUS flg=0x10 }\nBroadcast completed: result=1, data="status:{"version":"2.0.0","version_code":20000,"is_home":true,"last_error":"asset 1a2b: sha256 \\"mismatch\\""}"\n';
+    const b = parseBroadcast(real);
+    expect(b.result).toBe(1);
+    expect(JSON.parse(b.data!.slice(7))).toMatchObject({ version: '2.0.0', version_code: 20000, is_home: true });
+    expect(parseBroadcast('Broadcast completed: result=0\n')).toEqual({ result: 0, data: null });
+  });
+});

@@ -576,25 +576,32 @@ class FakeAndroid:
                 out.append(f'java.lang.IllegalArgumentException: Unknown authority {self.ASSETS[10:-1]}')
                 if 'echo "@@rc=$?"' in cmd: out.append('@@rc=1')
             elif cmd.startswith('content query'):
-                rows = [f'Row: {i} sha256={sha}, bytes={n}' for i, (sha, n) in enumerate(self.launcher_assets.items())]
+                one = re.match(r'content query --uri \S+/([0-9a-f]{64})\.(jpg|png|webp)', cmd)
+                items = [(one.group(1), self.launcher_assets[one.group(1)])] if one and one.group(1) in self.launcher_assets else [] if one else list(self.launcher_assets.items())
+                rows = [f'Row: {i} sha256={sha}, bytes={n}' for i, (sha, n) in enumerate(items)]
                 out += rows or ['No result found.']
             elif cmd.startswith('content delete'):
                 m = re.match(r'content delete --uri \S+/([0-9a-f]{64})\.(jpg|png|webp)', cmd)
                 if m: self.launcher_assets.pop(m.group(1), None)
             else:
+                # Like the real app: `content write` always exits 0; the SHA is checked after the pipe closes, and a
+                # rejected upload only shows up as a missing row in `content query` and in STATUS last_error.
                 m = re.match(r'content write --uri \S+/([0-9a-f]{64})\.(jpg|png|webp) < (\S+)(?: 2>&1)?(.*)$', cmd)
                 rc = 1
                 if not m:
-                    out.append('java.lang.IllegalArgumentException: bad asset name')
+                    out.append('Error while accessing provider:au.supercluster.screens.launcher.assets')
                 elif self.files_sha.get(m.group(3)) != m.group(1):
-                    out.append(f'java.lang.SecurityException: sha256 mismatch for {m.group(1)}')
+                    self.launcher_last_error = f'asset {m.group(1)[:12]}: sha256 mismatch'
                 else:
                     self.launcher_assets[m.group(1)] = self.files_size.get(m.group(3), 0); rc = 0
                 log('android.content_write', ip=self.ip, sha=m.group(1) if m else None, ok=rc == 0)
                 rest = m.group(4) if m else ''
-                if '@@rc=$?' in rest: out.append(f'@@rc={rc}')
+                if '@@rc=$?' in rest: out.append('@@rc=0')
                 rm = re.search(r'rm -f (\S+)', rest)
                 if rm: self.files_sha.pop(rm.group(1), None)
+                q = re.search(r'content query --uri \S+/([0-9a-f]{64})\.(?:jpg|png|webp)', rest)
+                if q:
+                    out += [f'Row: 0 sha256={q.group(1)}, bytes={self.launcher_assets[q.group(1)]}'] if q.group(1) in self.launcher_assets else ['No result found.']
         elif 'au.supercluster.screens.launcher.CONFIG' in cmd:
             m = re.search(r'--es config_b64 (\S+)', cmd)
             try:
@@ -614,8 +621,8 @@ class FakeAndroid:
                 st = {'version': self.launcher_version(), 'config_sha': getattr(self, 'launcher_cfg', None), 'is_home': self.home == self.LAUNCHER}
                 if self.launcher_v2():
                     st.update({'version_code': self.packages[self.LAUNCHER][1], 'config_v': (self.launcher_cfg_json or {}).get('v'),
-                               'assets': list(self.launcher_assets), 'missing_assets': self.launcher_missing(), 'last_error': None})
-                st = json.dumps(st).replace('"', '\\"')
+                               'assets': list(self.launcher_assets), 'missing_assets': self.launcher_missing(), 'last_error': getattr(self, 'launcher_last_error', None)})
+                st = json.dumps(st)  # real `am` prints the data string unescaped
                 out.append(f'Broadcast completed: result=1, data="status:{st}"')
             else:
                 out.append('Broadcast completed: result=0')

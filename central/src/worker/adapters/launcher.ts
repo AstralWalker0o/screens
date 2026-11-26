@@ -16,10 +16,18 @@ async function sh(ctx: AdapterCtx, cmd: string, timeoutMs = 30_000): Promise<{ s
   return ctx.gw('adb.shell', { serial: serialOf(ctx), cmd, timeout_ms: timeoutMs }, timeoutMs + 5_000);
 }
 
-/** Parse `am broadcast` output: Broadcast completed: result=1, data="ok:..." */
+/**
+ * Parse `am broadcast` output: `Broadcast completed: result=1, data="ok:..."`. Real Android (9–14) prints the
+ * data string as-is, without escaping quotes inside it (`data="status:{"version":"2.0.0",…}"`), so the data runs
+ * to the last quote on the line. An escaped form (`\"`) is accepted too.
+ */
 export function parseBroadcast(out: string): { result: number | null; data: string | null } {
-  const m = out.match(/Broadcast completed: result=(-?\d+)(?:, data="((?:[^"\\]|\\.)*)")?/);
-  return { result: m ? Number(m[1]) : null, data: m?.[2] != null ? m[2].replace(/\\"/g, '"').replace(/\\\\/g, '\\') : null };
+  const m = out.match(/Broadcast completed: result=(-?\d+)(?:, data="(.*)")?[ \t]*\r?$/m);
+  if (!m) return { result: null, data: null };
+  let data = m[2] ?? null;
+  // Escaped form: every quote inside is preceded by a backslash.
+  if (data && data.includes('\\"') && !/(^|[^\\])"/.test(data)) data = data.replace(/\\"/g, '"').replace(/\\\\/g, '\\');
+  return { result: Number(m[1]), data };
 }
 
 /** `content query` on the asset provider: one `Row: N sha256=<hex>, bytes=<n>` line per stored asset. */
@@ -90,12 +98,12 @@ export async function pushLauncherAsset(ctx: AdapterCtx, a: PushAsset): Promise<
   const tmp = `/data/local/tmp/screens-asset-${name}`;
   const url = await signAgentUrl(ctx.env.SIGNING_SECRET, ctx.origin, 'GET', a.r2_key, 30 * 60_000);
   await ctx.gw('adb.push', { serial: serialOf(ctx), url, sha256: a.sha256, remote_path: tmp }, 180_000);
-  const r = await sh(ctx, `content write --uri content://${ASSET_AUTHORITY}/${name} < ${tmp} 2>&1; echo "@@rc=$?"; rm -f ${tmp}`, 60_000);
-  const rc = r.stdout.match(/@@rc=(\d+)/)?.[1];
-  const out = r.stdout.replace(/@@rc=\d+\s*/, '').trim();
-  if (rc !== '0' || /exception|error|denied|not found|unknown/i.test(out)) {
-    throw new AdapterError('failed', `The launcher did not accept image ${a.sha256.slice(0, 12)}…: ${out.slice(-200) || `exit code ${rc ?? '?'}`}`);
-  }
+  // `content write` always exits 0 and the app verifies the SHA after the pipe closes, so confirm delivery by
+  // asking the provider for this exact asset (the app waits up to 10 s for a check still in progress).
+  const r = await sh(ctx, `content write --uri content://${ASSET_AUTHORITY}/${name} < ${tmp} 2>&1; rm -f ${tmp}; content query --uri content://${ASSET_AUTHORITY}/${name} 2>&1`, 60_000);
+  if (parseAssetRows(r.stdout).some((x) => x.sha256 === a.sha256)) return;
+  const err = r.stdout.split('\n').find((l) => /error|exception|denied|unknown/i.test(l))?.trim();
+  throw new AdapterError('failed', `The launcher did not accept image ${a.sha256.slice(0, 12)}…${err ? `: ${err.slice(0, 200)}` : ' (see the launcher status for the reason)'}`);
 }
 
 /** Send a config broadcast; the app answers `ok:<sha256 of the JSON>` or `error:<message>`. */

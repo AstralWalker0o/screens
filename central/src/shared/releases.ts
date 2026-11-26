@@ -17,6 +17,24 @@ export interface Release {
 
 export const RELEASES: Release[] = [
   {
+    version: '0.6.0',
+    date: '2026-11-26',
+    title: 'Home screens and app updates',
+    summary: 'Design the Android TV home screen once and push it to every box, and keep sideloaded apps up to date automatically.',
+    components: { gateway: '0.3.0', launcher: '2.0.0' },
+    notes: [
+      { kind: 'new', text: 'Screens Launcher 2.0: a full Android TV home screen with your wallpaper, a big clock, and rows of app banners that zoom and glow when selected. It replaces the stock launcher, so no Button Mapper is needed, and it still has no internet access at all.' },
+      { kind: 'new', text: 'New "Home screen" tab for each site: build rows, drag apps between them, hide apps, rename apps or give them your own pictures, and upload a wallpaper (shrunk automatically). A live TV preview responds to your arrow keys like the remote.' },
+      { kind: 'new', text: 'Save a home screen as a template or copy it to another property, and give a single box its own layout. Each box shows whether it\'s up to date, with Push now, Make it the home screen and Install/Update launcher buttons. Boxes that were off catch up when they come back.' },
+      { kind: 'new', text: 'New Updates page: which version of each app every Android TV box runs, site by site, and which have an update ready.' },
+      { kind: 'new', text: 'Apps can update overnight in each property\'s maintenance window (3–5 am by default), skipping a TV someone is watching. Screens updates one box first, checks the app still opens, then does the rest, and stops if anything goes wrong.' },
+      { kind: 'new', text: 'Per app, choose to update automatically, just be told, or keep the current version, for every property or just one. New versions of apps like Jellyfin and SmartTube can come straight from their official GitHub releases.' },
+      { kind: 'security', text: 'Google Play apps are left to Play. Screens never downgrades an app or installs a build signed by a different developer.' },
+      { kind: 'fixed', text: 'Screens now reads the launcher\'s answers the way real Android prints them, so launcher status works on real boxes. Every wallpaper or picture sent to a box is confirmed.' },
+      { kind: 'fixed', text: 'A box coming back online now fires the "device online" automation and clears its offline alert.' },
+    ],
+  },
+  {
     version: '0.5.3',
     date: '2026-11-26',
     title: 'No fixed IPs needed',
