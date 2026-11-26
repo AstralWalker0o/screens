@@ -8,6 +8,7 @@ import type {
   EnrollResult, Gateway, GatewayInterface, Job, LiveEvent, MdnsConfig, MdnsStatus, Me, NetConfig, NetworkState, Overview, PrivacyOverview,
   SiteDetail, SiteKind, SiteSummary, DeviceKind, BulkCommandRequest, BulkCommandResult, SiteSettings, GuestSettings, VersionInfo,
 } from '../shared/types';
+import type { SonosSiteOverview } from '../shared/sonos';
 
 export class ApiError extends Error {
   status: number;
@@ -138,6 +139,8 @@ export const api = {
     remove: (id: string) => del<Ok>(`/api/sites/${enc(id)}`),
     enroll: (id: string) => post<EnrollResult>(`/api/sites/${enc(id)}/enroll`),
     gateway: (id: string) => get<GatewayWithLogs>(`/api/sites/${enc(id)}/gateway`),
+    /** Live Sonos rooms and groups at the site. */
+    sonos: (id: string) => get<SonosSiteOverview>(`/api/sites/${enc(id)}/sonos`),
     gatewayAction: (id: string, action: 'restart' | 'update' | 'revoke') => post<Ok>(`/api/sites/${enc(id)}/gateway/${action}`),
     apps: (id: string) => get<SiteApp[]>(`/api/sites/${enc(id)}/apps`),
     discover: (id: string) => post<Discovered[]>(`/api/sites/${enc(id)}/discover`),

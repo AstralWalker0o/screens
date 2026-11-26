@@ -8,7 +8,7 @@ Prereqs (see README):
   - gateway binary built (gateway/dist/screens-gateway-linux-amd64)
 Run as root (DNS port 53, raw multicast).
 """
-import json, os, random, shutil, signal, socket, struct, subprocess, sys, tempfile, time, urllib.request
+import json, os, random, shutil, signal, socket, struct, subprocess, sys, tempfile, time, urllib.parse, urllib.request
 
 BASE = os.environ.get('CENTRAL', 'http://127.0.0.1:8787')
 ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), '..', '..'))
@@ -335,6 +335,45 @@ def main():
             r = api('POST', f'/api/devices/{s2}/command', {'command': 'media', 'args': {'action': 'pause'}})
             acts = [(e['ip'], e['action']) for e in sim_events('sonos.soap', t5)]
             check('sonos transport goes to group coordinator', ('10.99.0.30', 'Pause') in acts, str(acts[-5:]))
+            st = api('POST', f'/api/devices/{s2}/command', {'command': 'status'})['data']
+            check('sonos status: live group with member volumes', [m['name'] for m in st['group']['members']] == ['Living Room', 'Kitchen'] and st['group']['volume'] is not None and all(m.get('volume') is not None for m in st['group']['members']), json.dumps(st.get('group'))[:300])
+            r = api('POST', f'/api/devices/{s2}/command', {'command': 'group_volume', 'args': {'level': 30}})
+            check('sonos group volume', r['ok'] and r['data']['level'] == 30 and any(e['action'] == 'SetGroupVolume' and e['ip'] == '10.99.0.30' for e in sim_events('sonos.soap', t5)))
+            ov = api('GET', f'/api/sites/{sid}/sonos')
+            check('sonos site overview: one group, both rooms adopted', len(ov['groups']) == 1 and {m['device_id'] for m in ov['groups'][0]['members']} == {s1, s2}, json.dumps(ov)[:300])
+            # The field bug: Kitchen's last source is an app session that has ended (sim answers Play with UPnP 701).
+            api('POST', f'/api/devices/{s2}/command', {'command': 'ungroup'})
+            t6 = time.time()
+            r = api('POST', f'/api/devices/{s2}/command', {'command': 'media', 'args': {'action': 'play'}})
+            acts = [(e['ip'], e['action']) for e in sim_events('sonos.soap', t6)]
+            faults = [(e['action'], e['code']) for e in sim_events('sonos.fault', t6)]
+            check('sonos play recovers from an ended app session via the queue', r['ok'] and r['data'].get('state') == 'PLAYING' and ('Play', 701) in faults and ('10.99.0.31', 'SetAVTransportURI') in acts and 'session had ended' in (r['data'].get('detail') or ''), json.dumps(r)[:300])
+            d2 = api('GET', f'/api/devices/{s2}')
+            check('sonos play: facts updated straight away (no stale STOPPED)', d2['facts']['now_playing'].get('state') == 'PLAYING', json.dumps(d2['facts'].get('now_playing'))[:200])
+            art = d2['facts']['now_playing'].get('art') or ''
+            png = api('GET', f'/api/devices/{s2}/sonos/art?path={urllib.parse.quote(art, safe="")}', raw=True) if art.startswith('/getaa?') else b''
+            check('sonos album art proxied through the gateway', png[:4] == b'\x89PNG', art[:80])
+            q = api('POST', f'/api/devices/{s1}/command', {'command': 'queue'})['data']
+            check('sonos queue listed', q['total'] >= 3 and q['items'][0]['index'] == 1 and q['items'][0]['title'], json.dumps(q)[:300])
+            r = api('POST', f'/api/devices/{s1}/command', {'command': 'play_queue', 'args': {'index': 2}})
+            check('sonos play queue position', r['ok'] and r['data'].get('position', {}).get('track') == 2, json.dumps(r)[:300])
+            r = api('POST', f'/api/devices/{s1}/command', {'command': 'play_mode', 'args': {'shuffle': True, 'repeat': 'all'}})
+            check('sonos shuffle + repeat', r['data']['play_mode'] == {'shuffle': True, 'repeat': 'all'} and any(e['action'] == 'SetPlayMode' for e in sim_events('sonos.soap', t6)))
+            pls = api('POST', f'/api/devices/{s1}/command', {'command': 'playlists'})['data']
+            check('sonos playlists listed', [p['title'] for p in pls] == ['Dinner & Drinks', 'Sunday'], json.dumps(pls)[:200])
+            al = api('POST', f'/api/devices/{s1}/command', {'command': 'alarms'})['data']
+            r = api('POST', f'/api/devices/{s1}/command', {'command': 'alarm_enable', 'args': {'id': al[0]['id'], 'enabled': False}})
+            check('sonos alarms listed and disabled', al[0]['days'] == 'Weekdays' and r['data']['alarm']['enabled'] is False, json.dumps(al)[:200])
+            api('POST', f'/api/devices/{s1}/command', {'command': 'clear_queue'})
+            api('POST', f'/api/devices/{s1}/command', {'command': 'media', 'args': {'action': 'stop'}})
+            try:
+                api('POST', f'/api/devices/{s1}/command', {'command': 'media', 'args': {'action': 'play'}}); msg = ''
+            except AssertionError as e:
+                msg = str(e)
+            d1 = api('GET', f'/api/devices/{s1}')
+            check('sonos play failure explained in plain English and recorded on the device', 'queue is empty' in msg and (d1['facts'].get('last_error') or {}).get('command') == 'media', msg[:200])
+            r = api('POST', f'/api/devices/{s1}/command', {'command': 'pause_all'})
+            check('sonos pause all', r['ok'], json.dumps(r)[:200])
 
         except Exception as e:
             check('section sonos control completed', False, str(e)[:300])

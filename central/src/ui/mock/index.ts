@@ -15,6 +15,7 @@ import { applyKey, applyTap, renderScreen, type ScreenState } from './screens';
 import { startMockMirror } from './mirror';
 import type { MirrorConnection, MirrorHandlers, MirrorParams } from '../api';
 import { between, hex } from './rand';
+import { sonosMock, sonosOverview } from './sonos';
 
 const clone = <T,>(v: T): T => (v === undefined ? v : structuredClone(v));
 const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
@@ -246,16 +247,10 @@ const NEEDS: Record<string, Device['capabilities'][number] | undefined> = {
   launcher_install: 'launcher', launcher_config: 'launcher', launcher_status: 'launcher', launcher_remove: 'launcher', welcome_show: 'launcher',
   adb_pair: 'shell', revoke_permission: 'disable', grant_permission: 'disable', debloat: 'disable', input: 'remote', favorites: 'favorites', play_favorite: 'favorites', eq: 'eq', sleep_timer: 'media', led: 'led',
 };
-const KIND_ONLY: Record<string, DeviceKind> = { input: 'samsung', favorites: 'sonos', play_favorite: 'sonos', eq: 'sonos', sleep_timer: 'sonos', adb_pair: 'android' };
+const SONOS_ONLY = ['favorites', 'play_favorite', 'eq', 'sleep_timer', 'status', 'seek', 'play_mode', 'crossfade', 'queue', 'play_queue', 'remove_from_queue', 'clear_queue',
+  'playlists', 'inputs', 'play_input', 'join', 'party', 'pause_all', 'group_volume', 'group_mute', 'button_lock', 'settings', 'alarms', 'alarm_enable'];
+const KIND_ONLY: Record<string, DeviceKind> = { input: 'samsung', adb_pair: 'android', ...Object.fromEntries(SONOS_ONLY.map((c) => [c, 'sonos' as DeviceKind])) };
 const revoked = new Map<string, boolean>();
-const SONOS_FAVORITES = [
-  { title: 'triple j', uri: 'x-sonosapi-stream:s14986?sid=254&flags=8224&sn=0', meta: '<DIDL-Lite/>', kind: 'radio' },
-  { title: 'Double J', uri: 'x-sonosapi-stream:s148587?sid=254&flags=8224&sn=0', meta: '<DIDL-Lite/>', kind: 'radio' },
-  { title: 'ABC Classic', uri: 'x-sonosapi-stream:s17219?sid=254&flags=8224&sn=0', meta: '<DIDL-Lite/>', kind: 'radio' },
-  { title: 'Dinner Jazz', uri: 'x-rincon-cpcontainer:1006206cspotify%3aplaylist%3a37i9dQZF1DX4xuWVBs4FgJ', meta: '<DIDL-Lite/>', kind: 'playlist' },
-  { title: 'Discover Weekly', uri: 'x-rincon-cpcontainer:1006206cspotify%3aplaylist%3a37i9dQZEVXcJ', meta: '<DIDL-Lite/>', kind: 'playlist' },
-  { title: 'Weightless — Marconi Union', uri: 'x-sonos-spotify:spotify%3atrack%3a6kkwzB6hXLIONkEk9JciA6', meta: '<DIDL-Lite/>', kind: 'track' },
-];
 
 const WHY_NOT: Partial<Record<DeviceKind, string>> = {
   samsung: 'Samsung TVs only accept remote keys, text and app launching over the network.',
@@ -291,6 +286,13 @@ async function command(d: Device, cmd: string, args: Record<string, unknown> = {
   }
   if (d.status === 'pairing' && !['pair', 'refresh', 'adb_pair'].includes(cmd)) {
     throw err(409, 'not_paired', `${d.name} is waiting for someone to press “Allow” on the TV. Accept the prompt with the TV remote, then try again.`);
+  }
+  if (d.kind === 'sonos' && !['refresh', 'pair', 'power_off', 'power_on'].includes(cmd)) {
+    const r = await sonosMock(d, cmd, args, db.devices);
+    if (r) {
+      if ((d.facts.last_error as { command?: string } | undefined)?.command === cmd) d.facts.last_error = null;
+      return r;
+    }
   }
   const job = (data?: unknown): CommandResult => ({ ok: true, data, job_id: addJob(`command:${cmd}`, { site_id: d.site_id, device_id: d.id, params: args, result: data }).id });
   const st = screenFor(d.id);
@@ -428,26 +430,6 @@ async function command(d: Device, cmd: string, args: Record<string, unknown> = {
       }
       return { ok: true };
     }
-    case 'group': {
-      const coord = db.devices.find((x) => x.id === args.coordinator_id);
-      const uuid = coord?.facts.uuid as string | undefined;
-      if (!coord || !uuid) throw err(400, 'bad_args', 'Unknown coordinator speaker (refresh it first)');
-      const coordGroup = coord.facts.group as { coordinator: string };
-      const leader = coordGroup?.coordinator ?? uuid;
-      d.facts.group = { coordinator: leader, is_coordinator: false, members: [] };
-      d.facts.now_playing = { ...(coord.facts.now_playing as object), volume: (d.facts.now_playing as Record<string, unknown>)?.volume, muted: false };
-      syncGroups();
-      return { ok: true };
-    }
-    case 'ungroup': {
-      d.facts.group = { coordinator: d.facts.uuid, is_coordinator: true, members: [] };
-      d.facts.now_playing = { ...(d.facts.now_playing as object), state: 'STOPPED' };
-      syncGroups();
-      return { ok: true };
-    }
-    case 'led':
-      d.facts.led = !!args.on;
-      return { ok: true };
     case 'toast':
       return job();
     case 'guest_reset':
@@ -498,39 +480,6 @@ async function command(d: Device, cmd: string, args: Record<string, unknown> = {
       if (src !== 'SOURCE') d.current_app = src === 'TV' ? 'Live TV' : src.replace('HDMI', 'HDMI ');
       return { ok: true };
     }
-    case 'favorites':
-      await sleep(300);
-      return { ok: true, data: SONOS_FAVORITES };
-    case 'play_favorite': {
-      const fav = SONOS_FAVORITES.find((f) => f.uri === args.uri);
-      if (!fav) throw err(400, 'bad_args', 'uri (from favorites) required');
-      const np = { ...((d.facts.now_playing ?? {}) as Record<string, unknown>), state: 'PLAYING', title: fav.title, artist: fav.kind === 'radio' ? 'Live radio' : 'Sonos favourite', album: '' };
-      const coordUuid = (d.facts.group as { coordinator?: string } | undefined)?.coordinator;
-      for (const o of db.devices.filter((x) => x.kind === 'sonos' && (x.facts.group as { coordinator?: string } | undefined)?.coordinator === coordUuid)) {
-        const own = (o.facts.now_playing ?? {}) as Record<string, unknown>;
-        o.facts.now_playing = { ...np, volume: own.volume, muted: own.muted };
-        o.facts.position = fav.kind === 'radio' ? { elapsed_s: null, duration_s: null } : { elapsed_s: 0, duration_s: 240 };
-      }
-      return { ok: true };
-    }
-    case 'eq': {
-      const cur = (d.facts.eq ?? { bass: 0, treble: 0, loudness: true }) as Record<string, unknown>;
-      const clamp = (v: unknown) => Math.round(Math.min(10, Math.max(-10, Number(v))));
-      const next: Record<string, unknown> = { ...cur };
-      if (args.bass !== undefined) next.bass = clamp(args.bass);
-      if (args.treble !== undefined) next.treble = clamp(args.treble);
-      if (args.loudness !== undefined) next.loudness = !!args.loudness;
-      const soundbar = /arc|beam|ray|playbar|playbase/i.test(d.model ?? '');
-      if (args.night_mode !== undefined) next.night_mode = soundbar ? !!args.night_mode : 'not supported';
-      if (args.speech !== undefined) next.speech = soundbar ? !!args.speech : 'not supported';
-      d.facts.eq = next;
-      return { ok: true, data: { ok: true, eq: next } };
-    }
-    case 'sleep_timer': {
-      const mins = Math.round(Math.min(180, Math.max(0, Number(args.minutes) || 0)));
-      d.facts.sleep_timer_until = mins ? Date.now() + mins * M : null;
-      return { ok: true, data: { ok: true, minutes: mins } };
-    }
     case 'launcher_install': {
       await sleep(2200);
       d.facts.launcher = { installed: true, version: '1.0.2', config_sha: hex(6), is_home: true, checked_at: Date.now() };
@@ -552,15 +501,6 @@ async function command(d: Device, cmd: string, args: Record<string, unknown> = {
       return job();
     default:
       throw err(400, 'unknown_command', `Unknown command “${cmd}”.`);
-  }
-}
-
-function syncGroups() {
-  const sonos = db.devices.filter((x) => x.kind === 'sonos');
-  for (const o of sonos) {
-    const g = o.facts.group as { coordinator: string };
-    const members = sonos.filter((x) => (x.facts.group as { coordinator: string }).coordinator === g.coordinator).map((x) => ({ uuid: x.facts.uuid as string, name: x.name, ip: x.ip ?? '' }));
-    o.facts.group = { coordinator: g.coordinator, is_coordinator: g.coordinator === o.facts.uuid, members };
   }
 }
 
@@ -848,6 +788,7 @@ on('DELETE', '/api/devices/:id', (c) => {
   logAudit('device.delete', 'device', d.id, d.site_id);
   return { ok: true };
 });
+on('GET', '/api/sites/:id/sonos', (c) => sonosOverview(findSite(c.params[0]).id, db.devices));
 on('POST', '/api/devices/:id/command', async (c) => {
   const d = findDevice(c.params[0]);
   const { command: cmd, args } = b<{ command: string; args?: Record<string, unknown> }>(c);

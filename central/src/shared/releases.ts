@@ -17,6 +17,26 @@ export interface Release {
 
 export const RELEASES: Release[] = [
   {
+    version: '0.5.0',
+    date: '2026-11-26',
+    title: 'Sonos, properly',
+    summary: 'Play that actually starts the music, album art, queue, grouping, playlists and a Sonos tab for each site.',
+    components: { gateway: '0.3.0', launcher: '1.0.0' },
+    notes: [
+      { kind: 'fixed', text: 'Pressing Play on a Sonos speaker now really starts the music. If the app that was playing (like YouTube Music or Spotify) has finished, Screens starts the Sonos queue instead and tells you so.' },
+      { kind: 'improved', text: 'When something can\'t be played, Screens says why in plain words instead of an error number, and the speaker page shows the last problem until it\'s fixed.' },
+      { kind: 'new', text: 'Album covers for what\'s playing, the queue and favourites.' },
+      { kind: 'new', text: 'The speaker page updates by itself while it\'s open: song, time and who\'s grouped.' },
+      { kind: 'new', text: 'Shuffle, repeat and crossfade buttons, and a bar you can drag to jump within a song.' },
+      { kind: 'new', text: 'See the queue, jump to any song in it, remove songs or clear it.' },
+      { kind: 'new', text: 'Play your Sonos playlists, and switch to the TV or a plugged-in line-in where the speaker has one.' },
+      { kind: 'new', text: 'Group any rooms together or "Group all rooms", with volume for the whole group or each room. Subs and surround speakers show as part of their room.' },
+      { kind: 'new', text: 'Speaker settings: lock the buttons, home-theatre levels (Sub, surrounds, lip-sync) and Sonos alarms on or off. The sleep timer shows the minutes left.' },
+      { kind: 'new', text: 'A Sonos tab on each site with Sonos: every room at once, with play/pause, volumes, moving rooms between groups and "Pause all".' },
+      { kind: 'fixed', text: 'Playing a favourite after regrouping now uses the right speaker, turning Night Sound or Speech Enhancement off is reported correctly, and titles with "&" display properly.' },
+    ],
+  },
+  {
     version: '0.4.1',
     date: '2026-11-26',
     title: 'Private DNS hostnames that don\'t reveal your sites',

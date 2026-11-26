@@ -7,6 +7,7 @@ import type {
   SiteSettings,
 } from '../../shared/types';
 import { hex } from './rand';
+import { mockArt } from './sonos';
 
 export const NOW = Date.now();
 export const S = 1000;
@@ -157,24 +158,36 @@ export const devices: Device[] = [
   }),
   dev({
     id: 'dev_sonos_lr', site_id: 's_home', kind: 'sonos', name: 'Living Room', room: 'Living room', ip: '10.0.20.60', mac: '48:a6:b8:72:10:3c', port: 1400,
-    manufacturer: 'Sonos', model: 'Sonos Arc', os_version: 'S2 · 17.2', status: 'online', power: 'on', current_app: 'Spotify', last_seen: NOW - 9 * S, tags: ['audio'],
+    manufacturer: 'Sonos', model: 'Sonos Arc', os_version: 'S2 · 17.2', status: 'online', power: 'on', current_app: 'Midnight City', last_seen: NOW - 9 * S, tags: ['audio'],
     dns_mode: 'enforce', dns_policy: 'balanced', privacy_score: 88,
     facts: {
-      uuid: 'RINCON_48A6B872103C01400', room: 'Living Room', model_number: 'S19', display_version: '17.2', led: true,
-      now_playing: { state: 'PLAYING', title: 'Midnight City', artist: 'M83', album: 'Hurry Up, We’re Dreaming', volume: 28, muted: false },
-      position: { elapsed_s: 87, duration_s: 243 }, eq: { bass: 2, treble: 0, loudness: true, night_mode: false, speech: true },
-      group: { coordinator: 'RINCON_48A6B872103C01400', is_coordinator: true, members: [{ uuid: 'RINCON_48A6B872103C01400', name: 'Living Room', ip: '10.0.20.60' }, { uuid: 'RINCON_48A6B89C44D101400', name: 'Kitchen', ip: '10.0.20.61' }] },
+      uuid: 'RINCON_48A6B872103C01400', room: 'Living Room', model_number: 'S19', display_version: '17.2', led: true, has_tv: true, has_line_in: false,
+      now_playing: { state: 'PLAYING', title: 'Midnight City', artist: 'M83', album: 'Hurry Up, We’re Dreaming', art: mockArt(280), source: 'music', service: 'Spotify', volume: 28, muted: false },
+      position: { elapsed_s: 87, duration_s: 243, track: 1, at: NOW }, eq: { bass: 2, treble: 0, loudness: true, night_mode: false, speech: true },
+      play_mode: { shuffle: false, repeat: 'off' }, transport: { kind: 'queue', can_seek: true, can_skip: true, can_shuffle: true },
+      group: { coordinator: 'RINCON_48A6B872103C01400', is_coordinator: true, members: [{ uuid: 'RINCON_48A6B872103C01400', name: 'Living Room', ip: '10.0.20.60' }] },
+      zones: [
+        { uuid: 'RINCON_48A6B872103C01400', name: 'Living Room', ip: '10.0.20.60', coordinator: 'RINCON_48A6B872103C01400', bonded: [{ uuid: 'RINCON_48A6B8A1B2C301400', role: 'Sub', ip: '10.0.20.62' }] },
+        { uuid: 'RINCON_48A6B89C44D101400', name: 'Kitchen', ip: '10.0.20.61', coordinator: 'RINCON_48A6B89C44D101400' },
+      ],
     },
   }),
   dev({
     id: 'dev_sonos_kitchen', site_id: 's_home', kind: 'sonos', name: 'Kitchen', room: 'Kitchen', ip: '10.0.20.61', mac: '48:a6:b8:9c:44:d1', port: 1400,
-    manufacturer: 'Sonos', model: 'Sonos Era 100', os_version: 'S2 · 17.2', status: 'online', power: 'on', current_app: 'Spotify', last_seen: NOW - 9 * S, tags: ['audio'],
+    manufacturer: 'Sonos', model: 'Sonos Era 100', os_version: 'S2 · 17.2', status: 'online', power: 'on', current_app: null, last_seen: NOW - 9 * S, tags: ['audio'],
     dns_mode: 'enforce', dns_policy: 'balanced', privacy_score: 92,
     facts: {
-      uuid: 'RINCON_48A6B89C44D101400', room: 'Kitchen', model_number: 'S39', display_version: '17.2', led: false,
-      now_playing: { state: 'PLAYING', title: 'Midnight City', artist: 'M83', album: 'Hurry Up, We’re Dreaming', volume: 22, muted: false },
-      position: { elapsed_s: 87, duration_s: 243 },
-      group: { coordinator: 'RINCON_48A6B872103C01400', is_coordinator: false, members: [{ uuid: 'RINCON_48A6B872103C01400', name: 'Living Room', ip: '10.0.20.60' }, { uuid: 'RINCON_48A6B89C44D101400', name: 'Kitchen', ip: '10.0.20.61' }] },
+      // Stopped on a YouTube Music session started from the app, like the field report: Play falls back to the queue.
+      uuid: 'RINCON_48A6B89C44D101400', room: 'Kitchen', model_number: 'S39', display_version: '17.2', led: false, has_tv: false, has_line_in: true,
+      now_playing: { state: 'STOPPED', title: 'Space Blues', artist: 'Sweeps', art: mockArt(200), source: 'app', service: 'YouTube Music', volume: 22, muted: false },
+      position: { elapsed_s: 0, duration_s: 149, track: 1, at: NOW },
+      transport: { kind: 'session', can_seek: false, can_skip: false, can_shuffle: false },
+      group: { coordinator: 'RINCON_48A6B89C44D101400', is_coordinator: true, members: [{ uuid: 'RINCON_48A6B89C44D101400', name: 'Kitchen', ip: '10.0.20.61' }] },
+      zones: [
+        { uuid: 'RINCON_48A6B872103C01400', name: 'Living Room', ip: '10.0.20.60', coordinator: 'RINCON_48A6B872103C01400', bonded: [{ uuid: 'RINCON_48A6B8A1B2C301400', role: 'Sub', ip: '10.0.20.62' }] },
+        { uuid: 'RINCON_48A6B89C44D101400', name: 'Kitchen', ip: '10.0.20.61', coordinator: 'RINCON_48A6B89C44D101400' },
+      ],
+      last_error: { command: 'media', message: 'The speaker can’t restart what it was last playing — usually because the app that started it (for example YouTube Music, Spotify or AirPlay) has ended its session. Pick a favourite, playlist or the queue to start something new.', code: 'failed', at: NOW - 40 * M },
     },
   }),
   dev({

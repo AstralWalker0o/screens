@@ -326,6 +326,9 @@ siteRoutes.put('/sites/:id/network', async (c) => {
   return c.json(state);
 });
 
+/** Live view of every Sonos room and group at the site (docs/API.md). */
+siteRoutes.get('/sites/:id/sonos', async (c) => c.json(await hub(c.env, c.req.param('id'), originOf(c.req.raw, c.env), 'sonosOverview')));
+
 // ---------------------------------------------------------------- mDNS reflector
 siteRoutes.get('/sites/:id/mdns', async (c) => {
   const id = c.req.param('id');

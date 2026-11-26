@@ -32,6 +32,8 @@ export interface Adapter {
   /** Trigger pairing / authorization prompt. */
   pair(ctx: AdapterCtx): Promise<{ ok: boolean; detail: string }>;
   command(ctx: AdapterCtx, command: string, args: Record<string, any>): Promise<any>;
+  /** Extra commands that are routine (reads, sliders, transport) and are not written to the audit log. */
+  quiet?: ReadonlySet<string>;
 }
 
 export class AdapterError extends Error {

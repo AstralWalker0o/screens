@@ -26,6 +26,7 @@ Errors are `{ "error": "code", "message": "human text" }` with a 4xx/5xx status.
 | POST | `/api/sites/:id/discovered/:ip/ignore` | | `{ok}` |
 | GET | `/api/sites/:id/apps` | | `{package, label, system, category, risk, devices, kinds[]}[]`, the union of apps on the site's devices |
 | POST | `/api/sites/:id/guest-reset` | `{device_ids?: string[]}` | `{results: {device_id, ok, detail}[]}` |
+| GET | `/api/sites/:id/sonos` | | `SonosSiteOverview`: every Sonos group/room at the site, read live through one reachable speaker (state, track, art, group + room volumes, which rooms are adopted) |
 | GET | `/api/sites/:id/mdns` | | `{config: MdnsConfig, status: MdnsStatus \| null, interfaces: GatewayInterface[]}` |
 | PUT | `/api/sites/:id/mdns` | `MdnsConfig` | `{ok}` |
 | GET | `/api/sites/:id/network` | | `NetworkState`: `{supported, gateway_online, config: NetConfig, status: NetIfaceStatus[], errors, host: GatewayInterface[], updated_at}` (asks the gateway live when online) |
@@ -43,6 +44,7 @@ Errors are `{ "error": "code", "message": "human text" }` with a 4xx/5xx status.
 | GET | `/api/devices/:id/privacy` | | `DevicePrivacy` |
 | PUT | `/api/devices/:id/privacy/checklist` | `{key, done}` | `{ok}` |
 | GET | `/api/devices/:id/screenshot` | | `image/jpeg` (latest) or 404 |
+| GET | `/api/devices/:id/sonos/art?path=/getaa?…` | | Sonos album art for speaker-relative URLs (`now_playing.art`, queue/favourite `art` starting with `/`), fetched from the speaker through the gateway; raster images only, cached ~1 h per site. Absolute `https://` art loads directly. 404 when there is none. |
 | GET | `/api/privacy` | | `PrivacyOverview` |
 | GET | `/api/dns/domains?q=&category=&site_id=&days=7&limit=200` | | `DnsDomainStat[]` |
 | GET | `/api/dns/rules` | | `DnsRule[]` |
@@ -94,11 +96,29 @@ Which commands are available depends on `Device.capabilities`.
 | `revoke_permission` / `grant_permission` | `{package, permission: microphone\|camera\|location\|contacts}` | android |
 | `debloat` | `{packages?}` (defaults to catalogue bloat) | android: disables, never uninstalls |
 | `input` | `{source: TV\|HDMI1–4\|SOURCE}` | samsung |
-| `favorites` / `play_favorite` | `{}` / `{uri, meta}` | sonos |
-| `eq` | `{bass?, treble?, loudness?, night_mode?, speech?}` | sonos (night/speech: soundbars) |
+| `media` | `{action: play\|pause\|stop\|next\|prev\|toggle, uuid?}` | sonos, android. Sonos: goes to the group coordinator; `play` checks the speaker really started and, if the last source can't resume (ended app session, expired stream, UPnP 701), re-selects the queue / reloads the source / falls back to the Sonos queue → `{state, detail?, now_playing, position}`; otherwise fails with a plain-English reason. `pause` on something already paused is OK; live streams are stopped. |
+| `status` | – | sonos → live `{now_playing, position, group (with member + group volume), zones, play_mode, crossfade, sleep_timer, transport {kind, can_seek, can_skip, can_shuffle}}`, also merged into `facts`. The dashboard polls it every 20 s while a speaker is open. |
+| `seek` | `{position_s}` or `{track}` (1-based queue position) | sonos |
+| `play_mode` | `{shuffle?: bool, repeat?: off\|all\|one}` | sonos (queue only; radio/TV/app sessions refuse) |
+| `crossfade` | `{on: bool}` | sonos |
+| `queue` | `{start?, count? ≤ 100}` | sonos → `SonosQueue {items, total, start, current, active}` |
+| `play_queue` / `remove_from_queue` | `{index}` (1-based) | sonos |
+| `clear_queue` | – | sonos |
+| `favorites` / `playlists` | – | sonos → `SonosBrowseItem[]` (Sonos favourites `FV:2` / Sonos playlists `SQ:`) |
+| `play_favorite` | `{uri, meta}` from `favorites` or `playlists` | sonos: playlists, albums and single tracks replace the queue and play from track 1; radio/streams play directly |
+| `inputs` / `play_input` | – / `{kind: line_in\|tv, uuid?}` | sonos: line-in on any adopted speaker that has one (`x-rincon-stream`), TV on soundbars/Amp (`x-sonos-htastream`) |
+| `volume` / `mute` | also accept `uuid` to act on another room of the household | sonos |
+| `group_volume` | `{level}` or `{delta}` | sonos (GroupRenderingControl on the coordinator, snapshot first) |
+| `group_mute` | `{mute: bool}` | sonos |
+| `group` / `join` | `{coordinator_id}` or `{coordinator_uuid}`, optional `uuid` = the room to move (default this speaker) | sonos |
+| `ungroup` | `{uuid?}` | sonos: this speaker (or room `uuid`) plays on its own |
+| `party` | – | sonos: every room joins this speaker's group |
+| `pause_all` | – | sonos: pauses every playing group in the household → `{paused}` |
+| `eq` | `{bass?, treble?, loudness?, night_mode?, speech?, sub_enabled?, sub_gain?, surround_enabled?, surround_level?, music_surround_level?, height_level?, audio_delay?}` | sonos (night/speech/levels: soundbars, Amp, rooms with a Sub; unsupported values come back as `"not supported"`) → `{eq, ht?}` |
+| `settings` | – | sonos → `SonosSettings` (LED, button lock, EQ, home-theatre levels, crossfade, sleep timer remaining) |
+| `button_lock` | `{on: bool}` | sonos (locks the speaker's touch controls) |
+| `alarms` / `alarm_enable` | – / `{id, enabled}` | sonos: list Sonos alarms; turn one on/off (all other alarm fields are sent back unchanged) |
 | `sleep_timer` | `{minutes}` (0 clears) | sonos |
-| `media` | `{action: play\|pause\|next\|prev\|stop}` | sonos, android |
-| `group` | `{coordinator_id}` / `ungroup` | sonos |
 | `led` | `{on: bool}` | sonos |
 | `toast` | `{message}` | lg, android |
 | `guest_reset` | – | android (samsung: best-effort Home). Re-opens the launcher welcome screen when enabled. |
@@ -107,5 +127,9 @@ Which commands are available depends on `Device.capabilities`.
 | `launcher_status` | – | android → `{status: LauncherState}` (also stored in `facts.launcher`) |
 | `launcher_remove` | – | android: restore the stock launcher and uninstall |
 | `welcome_show` | – | android: show the welcome screen now |
+
+Failed commands are stored on the device as `facts.last_error = {command, message, code, at}` (cleared when the same command next succeeds), so problems with quiet commands such as `media` and `volume` — which are not written to the audit log — stay visible. Background reads (`refresh`, `status`) don't overwrite it.
+
+Sonos errors are translated from UPnP codes into plain English (`central/src/worker/adapters/sonos-parse.ts` → `sonosErrorMessage`), e.g. 701 on Play = the app/session that started the music has ended, 712 = shuffle/repeat need the Sonos queue, 716 = the music service couldn't find the item, 800 = only the group's main speaker can do that.
 
 Site guest settings (`SiteSettings.guest`) include `welcome: WelcomeConfig`, `kiosk: KioskConfig` (write `kiosk.pin` as 4–8 digits, read `kiosk.pin_set`) and `show_welcome_after_reset`. Saving them re-pushes the launcher config to every device that has it.
