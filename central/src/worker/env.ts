@@ -19,4 +19,6 @@ export interface Env {
   CF_ZONE_ID?: string;          // zone id for DOT_BASE_DOMAIN (var)
   ACME_DIRECTORY?: string;      // override (e.g. Let's Encrypt staging)
   DEV_AUTH?: string;            // "1" = skip Access verification (local dev only)
+  GITHUB_TOKEN?: string;        // optional secret: raises GitHub's rate limit for update sources (read-only, public repos)
+  GITHUB_API_BASE?: string;     // tests only: point update sources at a stand-in for api.github.com
 }

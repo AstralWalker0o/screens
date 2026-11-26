@@ -21,6 +21,7 @@ import { chunk, dayKey, hourKey, HttpError, isDotLabel, isPrivateIPv4, normMac, 
 import { scoreDevice } from '../privacy/score';
 import { seed } from '../lib/seed';
 import { RelayStream } from './stream';
+import { UpdateRunner } from '../updates/runner';
 import { checkControl, mirrorOptions, type MirrorOptions, RESET_VIDEO, SCRCPY_DEVICE_PATH, SCRCPY_R2_KEY, SCRCPY_SHA256, ScrcpyVideoParser, serverCommand, type StreamMeta } from './mirror';
 
 interface Pending { resolve: (v: any) => void; reject: (e: Error) => void; timer: ReturnType<typeof setTimeout> }
@@ -1017,6 +1018,19 @@ export class SiteHub extends DurableObject<Env> {
     }));
   }
 
+  // ---------------------------------------------------------------- app updates (src/worker/updates, docs/UPDATES.md)
+  private _updates?: UpdateRunner;
+  private get updates(): UpdateRunner {
+    return this._updates ??= new UpdateRunner({
+      env: this.env, siteId: () => this.siteId, origin: () => this.origin, online: () => this.online,
+      gw: (op, args, t) => this.gw(op, args, t), diag: (l, src, m, d) => this.diag(l, src, m, d),
+      syncApps: (id) => this.syncApps(id), command: (id, c, a, actor) => this.command(id, c, a, actor), waitUntil: (p) => this.ctx.waitUntil(p),
+    });
+  }
+  async updateNow(req: { package: string; device_ids?: string[]; force?: boolean }, actor: string) { return this.updates.updateNow(req, actor); }
+  async updatesProbe(deviceIds?: string[]) { return this.updates.probe(deviceIds); }
+  async updatesCancel(id: string, actor: string) { return this.updates.cancel(id, actor); }
+
   // ---------------------------------------------------------------- automations
   async runAutomation(automationId: string, ctxDeviceId: string | null = null): Promise<{ ok: boolean; job_id: string }> {
     const row = await this.env.DB.prepare('SELECT * FROM automations WHERE id = ?').bind(automationId).first<Row>();
@@ -1123,6 +1137,7 @@ export class SiteHub extends DurableObject<Env> {
         await this.probeDevices();
         if (due('refresh', 5 * 60_000)) await this.refreshAll();
         if (due('inventory', 6 * 3_600_000)) await this.inventoryAll();
+        this.updates.onTick();
       } else {
         const since = this.kv<number | null>('offline_since', null);
         if (since && t - since > 3 * 60_000) {
@@ -1275,6 +1290,7 @@ export class SiteHub extends DurableObject<Env> {
       runAutomation: this.runAutomation, retryDotNow: this.requestDot, pushDnsConfig: this.pushDnsConfig, pushMdnsConfig: this.pushMdnsConfig, status: this.status,
       requestDot: this.requestDot, flushAggregates: this.flushAggregates, pushLauncherConfig: this.pushLauncherConfig,
       sonosOverview: this.sonosOverview, sonosArt: this.sonosArt,
+      updateNow: this.updateNow, updatesProbe: this.updatesProbe, updatesCancel: this.updatesCancel,
     };
     const fn = allowed[method];
     if (!fn) return { ok: false, status: 400, code: 'bad_method', message: `Unknown hub method ${method}` };
