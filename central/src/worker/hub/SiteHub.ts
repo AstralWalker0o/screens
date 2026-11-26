@@ -6,7 +6,7 @@ import type {
 import { adapterFor, DISCOVERY_MDNS, DISCOVERY_PORTS, fingerprint, parseSonosDescription, probeTarget, type RawHost } from '../adapters';
 import type { AdapterCtx } from '../adapters/types';
 import { AdapterError, xmlTag } from '../adapters/types';
-import { classify } from '../dns/compile';
+import { classify, compilePolicies, refreshLists } from '../dns/compile';
 import { buildDnsConfig } from '../dns/config';
 import { certNotAfter, issueCertificate, upsertRecord, zoneId } from '../acme/acme';
 import type { Env } from '../env';
@@ -16,6 +16,7 @@ import {
 } from '../lib/db';
 import { chunk, dayKey, hourKey, HttpError, normMac, now, parseJson, rid, sleep } from '../lib/util';
 import { scoreDevice } from '../privacy/score';
+import { seed } from '../lib/seed';
 import { RelayStream } from './stream';
 
 interface Pending { resolve: (v: any) => void; reject: (e: Error) => void; timer: ReturnType<typeof setTimeout> }
@@ -797,6 +798,16 @@ export class SiteHub extends DurableObject<Env> {
           if (res.ok) await this.refreshDevice(id).catch(() => undefined);
           else await this.updateDevice(row, { status: 'pairing', facts: { pairing_detail: res.detail } });
         }));
+      }
+      // First-run fallback: build the DNS policies here if the global cron hasn't produced any yet.
+      if (this.online && due('policy_bootstrap', 10 * 60_000)) {
+        const builds = await this.env.DB.prepare('SELECT count(*) n FROM dns_policy_builds').first<Row>();
+        if (!builds?.n) {
+          await seed(this.env);
+          await refreshLists(this.env, true);
+          await compilePolicies(this.env);
+          this.setKv('dns_refresh', true);
+        }
       }
       if (this.online && this.kv<boolean>('dns_refresh', false)) {
         this.setKv('dns_refresh', false);

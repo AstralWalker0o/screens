@@ -7,11 +7,11 @@ import { automationSites, opsRoutes } from './api/ops';
 import type { AppEnv } from './api/shared';
 import { siteRoutes } from './api/sites';
 import { cronMatches } from './automations/cron';
-import { APP_CATALOG } from './dns/catalog';
 import { compilePolicies, refreshLists } from './dns/compile';
 import type { Env } from './env';
 import { requireAccess } from './lib/auth';
 import { type Row, toAutomation } from './lib/db';
+import { seed } from './lib/seed';
 import { hub, pushDnsAll } from './lib/hub';
 import { HttpError } from './lib/util';
 import { statusForCode } from './hub/SiteHub';
@@ -49,15 +49,6 @@ app.route('/api', deviceRoutes);
 app.route('/api', dnsRoutes);
 app.route('/api', opsRoutes);
 app.all('/api/*', (c) => c.json({ error: 'not_found', message: 'No such API endpoint' }, 404));
-
-async function seed(env: Env) {
-  const has = await env.DB.prepare("SELECT value FROM settings WHERE key = 'seeded_v1'").first<Row>();
-  if (has) return;
-  await env.DB.batch(APP_CATALOG.map((a) => env.DB.prepare(
-    'INSERT INTO app_catalog (package, label, vendor, category, risk, notes, guest_clear) VALUES (?,?,?,?,?,?,?) ON CONFLICT(package) DO UPDATE SET label = excluded.label, vendor = excluded.vendor, category = excluded.category, risk = excluded.risk, notes = excluded.notes, guest_clear = excluded.guest_clear',
-  ).bind(a.package, a.label, a.vendor ?? null, a.category, a.risk ?? null, a.notes ?? null, a.guest_clear ? 1 : 0)));
-  await env.DB.prepare("INSERT INTO settings (key, value) VALUES ('seeded_v1', 'true') ON CONFLICT(key) DO NOTHING").run();
-}
 
 async function scheduled(controller: ScheduledController, env: Env, ctx: ExecutionContext) {
   const t = controller.scheduledTime;
