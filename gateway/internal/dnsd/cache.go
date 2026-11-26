@@ -146,8 +146,12 @@ func (c *Cache) Get(key string, now time.Time) *dns.Msg {
 	}
 	ent := el.Value.(*cacheEntry)
 	if !now.Before(ent.expires) {
-		c.ll.Remove(el)
-		delete(c.m, key)
+		// Expired entries stay (LRU-evicted) so they can be served stale
+		// when every upstream is unreachable.
+		if now.Sub(ent.expires) > MaxStale {
+			c.ll.Remove(el)
+			delete(c.m, key)
+		}
 		c.mu.Unlock()
 		return nil
 	}
@@ -155,20 +159,54 @@ func (c *Cache) Get(key string, now time.Time) *dns.Msg {
 	msg := ent.msg.Copy()
 	age := uint32(now.Sub(ent.stored) / time.Second)
 	c.mu.Unlock()
+	setTTL(msg, func(t uint32) uint32 {
+		if t > age {
+			return t - age
+		}
+		return 0
+	})
+	return msg
+}
+
+// MaxStale is how long past expiry an entry may still be served stale.
+const MaxStale = 24 * time.Hour
+
+// StaleTTL is the TTL given to answers served stale (RFC 8767 §4).
+const StaleTTL = 30
+
+// GetStale returns an expired (or live) entry with TTLs set to StaleTTL,
+// for use when resolution fails.
+func (c *Cache) GetStale(key string, now time.Time) *dns.Msg {
+	if key == "" {
+		return nil
+	}
+	c.mu.Lock()
+	el, ok := c.m[key]
+	if !ok {
+		c.mu.Unlock()
+		return nil
+	}
+	ent := el.Value.(*cacheEntry)
+	if now.Sub(ent.expires) > MaxStale {
+		c.mu.Unlock()
+		return nil
+	}
+	msg := ent.msg.Copy()
+	c.mu.Unlock()
+	setTTL(msg, func(uint32) uint32 { return StaleTTL })
+	return msg
+}
+
+func setTTL(msg *dns.Msg, f func(uint32) uint32) {
 	for _, sec := range [][]dns.RR{msg.Answer, msg.Ns, msg.Extra} {
 		for _, rr := range sec {
 			h := rr.Header()
 			if h.Rrtype == dns.TypeOPT {
 				continue
 			}
-			if h.Ttl > age {
-				h.Ttl -= age
-			} else {
-				h.Ttl = 0
-			}
+			h.Ttl = f(h.Ttl)
 		}
 	}
-	return msg
 }
 
 // Put stores a response if cacheable. TTL is clamped to [min,max].

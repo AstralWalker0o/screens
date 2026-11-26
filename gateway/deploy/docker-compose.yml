@@ -1,0 +1,32 @@
+# Screens site gateway. Template: the central app serves a generated copy
+# (with .env) to the install script, which places it in /opt/screens/.
+#
+# Layout on the host:
+#   /opt/screens/docker-compose.yml
+#   /opt/screens/.env                      SCREENS_CENTRAL_URL, SCREENS_ENROLL_TOKEN, ...
+#   /opt/screens/data/entrypoint.sh
+#   /opt/screens/data/bin/screens-gateway  (replaced in place by sys.update)
+services:
+  screens-gateway:
+    image: alpine:3.22
+    container_name: screens-gateway
+    network_mode: host
+    restart: unless-stopped
+    init: true # reaps the adb server's children
+    cap_add:
+      - NET_ADMIN
+      - NET_RAW
+      - NET_BIND_SERVICE
+    volumes:
+      - ./data:/data
+    entrypoint: ["/bin/sh", "/data/entrypoint.sh"]
+    env_file:
+      - .env
+    environment:
+      SCREENS_DATA: /data
+    stop_grace_period: 10s
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"

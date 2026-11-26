@@ -73,7 +73,7 @@ func TestCSRInstallAndDoT(t *testing.T) {
 	}
 
 	// DoT enabled but no cert yet → not listening.
-	cfg := mustCfg(t, `{"listen":["127.0.0.1:0"],"upstreams":["`+up.srv.URL+`/dns-query"],"dot":{"enabled":true,"listen":["127.0.0.1:0"]}}`)
+	cfg := mustCfg(t, `{"enabled":true,"listen":["127.0.0.1:0"],"upstreams":["`+up.srv.URL+`/dns-query"],"dot":{"enabled":true,"listen":["127.0.0.1:0"]}}`)
 	stt := s.Apply(cfg)
 	if len(stt.DoTListening) != 0 {
 		t.Fatalf("dot listening without cert: %+v", stt)

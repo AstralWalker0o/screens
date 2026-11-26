@@ -172,6 +172,16 @@ def sonos(ips):
                     return resp()
                 if action == 'BecomeCoordinatorOfStandaloneGroup': s['coord'] = uuids[ip]; return resp()
                 if action == 'SetLEDState': s['led'] = val('DesiredLEDState'); return resp()
+                if action == 'Browse':
+                    items = ('&lt;DIDL-Lite&gt;&lt;item id="FV:2/1"&gt;&lt;dc:title&gt;Triple J&lt;/dc:title&gt;&lt;res&gt;x-sonosapi-stream:s25065?sid=254&lt;/res&gt;&lt;r:resMD&gt;&amp;lt;DIDL-Lite&amp;gt;&amp;lt;/DIDL-Lite&amp;gt;&lt;/r:resMD&gt;&lt;/item&gt;'
+                             '&lt;item id="FV:2/2"&gt;&lt;dc:title&gt;Chill Mix&lt;/dc:title&gt;&lt;res&gt;x-rincon-cpcontainer:1006206cspotify%3aplaylist%3a1&lt;/res&gt;&lt;/item&gt;&lt;/DIDL-Lite&gt;')
+                    return resp(f'<Result>{items}</Result><NumberReturned>2</NumberReturned><TotalMatches>2</TotalMatches>')
+                if action in ('SetBass', 'SetTreble', 'SetLoudness'):
+                    s[action[3:].lower()] = int(val('Desired' + action[3:]) or 0); return resp()
+                if action == 'GetBass': return resp(f'<CurrentBass>{s.get("bass", 0)}</CurrentBass>')
+                if action == 'GetTreble': return resp(f'<CurrentTreble>{s.get("treble", 0)}</CurrentTreble>')
+                if action == 'GetLoudness': return resp(f'<CurrentLoudness>{s.get("loudness", 1)}</CurrentLoudness>')
+                if action in ('ConfigureSleepTimer', 'RemoveAllTracksFromQueue', 'AddURIToQueue', 'SetEQ'): s['last_' + action] = body[-300:]; return resp()
                 return self.reply('<s:Envelope><s:Body><s:Fault><detail><UPnPError><errorCode>401</errorCode></UPnPError></detail></s:Fault></s:Body></s:Envelope>', 500)
         return H
     for ip in ips:
@@ -210,6 +220,7 @@ class FakeAndroid:
         }
         self.awake = True
         self.home = 'com.google.android.tvlauncher'
+        self.appops = {}
 
     def shell(self, cmd):
         """Very small emulation of the commands the Screens Android driver sends."""
@@ -250,11 +261,17 @@ class FakeAndroid:
                 if m: self.cleared.append(m.group(1)); out.append('Success'); continue
                 m = re.match(r'pm disable-user --user 0 (\S+)', part)
                 if m: self.disabled.add(m.group(1)); out.append(f'Package {m.group(1)} new state: disabled-user'); continue
+                m = re.match(r'pm (revoke|grant) (\S+) (\S+)', part)
+                if m: continue
+                m = re.match(r'cmd appops set (\S+) (\S+) (\S+)', part)
+                if m: self.appops[(m.group(1), m.group(2))] = m.group(3); continue
+                m = re.match(r'echo "@@mode=\$\(cmd appops get (\S+) (\S+).*', part)
+                if m: out.append('@@mode=' + m.group(2) + ': ' + self.appops.get((m.group(1), m.group(2)), 'allow')); continue
                 m = re.match(r'pm enable (\S+)', part)
                 if m: self.disabled.discard(m.group(1)); out.append(f'Package {m.group(1)} new state: enabled'); continue
                 if part.startswith('pm list packages'):
                     flt = part.split()[-1] if len(part.split()) > 3 and '.' in part.split()[-1] else None
-                    lst = third if ' -3' in part else list(self.packages)
+                    lst = third if ' -3' in part else [p for p in self.packages if not (' -e' in part and p in self.disabled)]
                     out += [f'package:{p}' for p in lst if not flt or p == flt]; continue
                 if part.startswith('cmd media_session volume') and '--get' in part: out.append('volume is 7 in range [0..15]'); continue
                 if part.startswith('input keyevent'):

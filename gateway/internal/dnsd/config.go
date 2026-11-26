@@ -28,6 +28,9 @@ type Config struct {
 	Clients       map[string]ClientConfig `json:"clients"`
 	Policies      map[string]PolicyRef    `json:"policies"`
 	Log           LogConfig               `json:"log"`
+
+	// Warnings lists entries that were ignored or replaced while parsing.
+	Warnings []string `json:"-"`
 }
 
 // DoTConfig configures the DNS-over-TLS listener.
@@ -69,10 +72,11 @@ type LogConfig struct {
 // DefaultUpstreams is used when the config lists none.
 var DefaultUpstreams = []string{"https://1.1.1.1/dns-query", "https://1.0.0.1/dns-query"}
 
-// DefaultConfig returns the values used for fields the hub omits.
+// DefaultConfig returns the values used for fields the hub omits. Note
+// that "enabled" defaults to false: DNS only binds when explicitly enabled.
 func DefaultConfig() Config {
 	return Config{
-		Enabled:       true,
+		Enabled:       false,
 		Listen:        []string{"0.0.0.0:53"},
 		DoT:           DoTConfig{Listen: []string{"0.0.0.0:853"}},
 		BlockResponse: "null",
@@ -84,8 +88,10 @@ func DefaultConfig() Config {
 
 var policyNameRe = regexp.MustCompile(`^[A-Za-z0-9_.-]{1,128}$`)
 
-// ParseConfig decodes dns.configure args on top of DefaultConfig and
-// validates them.
+// ParseConfig decodes dns.configure args on top of DefaultConfig. Only
+// malformed JSON is an error: a bad entry (unknown mode, non-IP client key,
+// unsafe policy name, unknown block_response) is replaced by a safe value
+// and reported in Warnings, so one bad record never takes DNS down.
 func ParseConfig(raw json.RawMessage) (Config, error) {
 	cfg := DefaultConfig()
 	if len(raw) > 0 && string(raw) != "null" {
@@ -93,6 +99,7 @@ func ParseConfig(raw json.RawMessage) (Config, error) {
 			return cfg, fmt.Errorf("dns config: %w", err)
 		}
 	}
+	warn := func(format string, a ...any) { cfg.Warnings = append(cfg.Warnings, fmt.Sprintf(format, a...)) }
 	if len(cfg.Upstreams) == 0 {
 		cfg.Upstreams = DefaultUpstreams
 	}
@@ -101,7 +108,8 @@ func ParseConfig(raw json.RawMessage) (Config, error) {
 		cfg.BlockResponse = "null"
 	case "nxdomain":
 	default:
-		return cfg, fmt.Errorf("block_response must be null or nxdomain, got %q", cfg.BlockResponse)
+		warn("block_response %q unknown; using null", cfg.BlockResponse)
+		cfg.BlockResponse = "null"
 	}
 	if cfg.Cache.MaxEntries <= 0 {
 		cfg.Cache.MaxEntries = 20000
@@ -119,24 +127,28 @@ func ParseConfig(raw json.RawMessage) (Config, error) {
 		cfg.Default.Mode = ModeMonitor
 	}
 	if err := validMode(cfg.Default.Mode); err != nil {
-		return cfg, fmt.Errorf("default: %w", err)
-	}
-	for ip, c := range cfg.Clients {
-		if _, err := netip.ParseAddr(ip); err != nil {
-			return cfg, fmt.Errorf("clients: key %q is not an IP address", ip)
-		}
-		if c.Mode == "" {
-			c.Mode = cfg.Default.Mode
-			cfg.Clients[ip] = c
-		}
-		if err := validMode(c.Mode); err != nil {
-			return cfg, fmt.Errorf("client %s: %w", ip, err)
-		}
+		warn("default: %v; using monitor", err)
+		cfg.Default.Mode = ModeMonitor
 	}
 	for name := range cfg.Policies {
 		if !policyNameRe.MatchString(name) {
-			return cfg, fmt.Errorf("policy name %q is not a safe identifier", name)
+			warn("policy name %q is not a safe identifier; ignored", name)
+			delete(cfg.Policies, name)
 		}
+	}
+	for ip, c := range cfg.Clients {
+		if _, err := netip.ParseAddr(ip); err != nil {
+			warn("clients: key %q is not an IP address; ignored", ip)
+			delete(cfg.Clients, ip)
+			continue
+		}
+		if c.Mode == "" {
+			c.Mode = cfg.Default.Mode
+		} else if err := validMode(c.Mode); err != nil {
+			warn("client %s: %v; using %s", ip, err, cfg.Default.Mode)
+			c.Mode = cfg.Default.Mode
+		}
+		cfg.Clients[ip] = c
 	}
 	return cfg, nil
 }

@@ -19,6 +19,7 @@ services:
     image: alpine:3.22
     container_name: screens-gateway
     network_mode: host
+    init: true
     restart: unless-stopped
     cap_add: [NET_ADMIN, NET_RAW, NET_BIND_SERVICE]
     volumes:

@@ -139,4 +139,3 @@ func (a *Agent) opSysLogs(ctx context.Context, raw json.RawMessage) (any, error)
 	})
 	return data, nil
 }
-

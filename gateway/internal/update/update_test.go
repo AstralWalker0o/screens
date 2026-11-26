@@ -47,8 +47,10 @@ func TestApply(t *testing.T) {
 	if err != nil || st.Mode().Perm() != 0o755 || st.Size() != int64(len(bin)) {
 		t.Fatalf("installed %v %v", st, err)
 	}
-	if _, err := os.Stat(dst + ".new"); !os.IsNotExist(err) {
-		t.Fatal(".new left behind")
+	for _, leftover := range []string{dst + ".new", dst + ".new.part"} {
+		if _, err := os.Stat(leftover); !os.IsNotExist(err) {
+			t.Fatalf("%s left behind", leftover)
+		}
 	}
 
 	var pe *proto.Error

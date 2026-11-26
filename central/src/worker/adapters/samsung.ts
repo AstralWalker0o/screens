@@ -21,6 +21,11 @@ export const SAMSUNG_KEYS: Record<KeyName, string> = {
 
 const CLIENT_NAME = b64Encode(new TextEncoder().encode('Screens'));
 
+/** The `event` field of a TV message (parsed, so formatting/whitespace never matters). */
+export function eventOf(m: string): string {
+  try { return String(JSON.parse(m)?.event ?? ''); } catch { return ''; }
+}
+
 interface SamsungSecrets { token?: string }
 
 async function deviceInfo(ctx: AdapterCtx): Promise<any | null> {
@@ -47,7 +52,7 @@ async function remote(ctx: AdapterCtx, waitForApprovalMs = 8000): Promise<HubStr
     ? `wss://${ctx.device.ip}:8002/api/v2/channels/samsung.remote.control?name=${encodeURIComponent(CLIENT_NAME)}${secrets.token ? `&token=${secrets.token}` : ''}`
     : `ws://${ctx.device.ip}:8001/api/v2/channels/samsung.remote.control?name=${encodeURIComponent(CLIENT_NAME)}`;
   const stream = await ctx.openWs(url, { insecure_tls: true });
-  const first = await stream.next((m) => /"event":"ms\.channel\.(connect|unauthorized|timeOut)"/.test(m), waitForApprovalMs).catch(() => null);
+  const first = await stream.next((m) => /^ms\.channel\.(connect|unauthorized|timeOut)$/.test(eventOf(m)), waitForApprovalMs).catch(() => null);
   if (!first) { stream.close(); throw new AdapterError('pairing', 'Waiting for approval: accept the "Screens" connection request on the TV with its remote, then try again.'); }
   const msg = JSON.parse(first);
   if (msg.event !== 'ms.channel.connect') {
@@ -145,7 +150,7 @@ export const samsung: Adapter = {
       case 'apps': {
         const s = await remote(ctx);
         s.send(JSON.stringify({ method: 'ms.channel.emit', params: { event: 'ed.installedApp.get', to: 'host' } }));
-        const msg = JSON.parse(await s.next((m) => m.includes('ed.installedApp.get'), 10_000));
+        const msg = JSON.parse(await s.next((m) => eventOf(m) === 'ed.installedApp.get', 10_000));
         const list: any[] = msg.data?.data ?? [];
         return list.map((a) => ({
           package: String(a.appId), app_id: String(a.appId), label: a.name ?? null, system: false, enabled: true,
@@ -159,6 +164,13 @@ export const samsung: Adapter = {
         const s = await remote(ctx);
         const type = Number(args.app_type ?? 2);
         s.send(JSON.stringify({ method: 'ms.channel.emit', params: { event: 'ed.apps.launch', to: 'host', data: { appId, action_type: type === 2 ? 'DEEP_LINK' : 'NATIVE_LAUNCH' } } }));
+        return { ok: true };
+      }
+      case 'input': {
+        const map: Record<string, string> = { TV: 'KEY_TV', HDMI1: 'KEY_HDMI1', HDMI2: 'KEY_HDMI2', HDMI3: 'KEY_HDMI3', HDMI4: 'KEY_HDMI4', SOURCE: 'KEY_SOURCE' };
+        const key = map[String(args.source ?? '').toUpperCase()];
+        if (!key) throw new AdapterError('bad_args', 'source must be TV, HDMI1–HDMI4 or SOURCE');
+        await sendKey(ctx, key);
         return { ok: true };
       }
       case 'guest_reset': {

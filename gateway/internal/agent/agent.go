@@ -75,7 +75,11 @@ type Agent struct {
 	cancel   context.CancelFunc
 	exitCode atomic.Int32
 	exitReq  atomic.Bool
+	ready    chan struct{}
 }
+
+// Ready is closed once DNS/mDNS have been started from persisted config.
+func (a *Agent) Ready() <-chan struct{} { return a.ready }
 
 // New builds an agent. Nothing runs until Run.
 func New(opts Options) *Agent {
@@ -91,7 +95,7 @@ func New(opts Options) *Agent {
 	if opts.Version == "" {
 		opts.Version = "dev"
 	}
-	a := &Agent{opts: opts, log: opts.Logger, startedAt: time.Now(), teleChanged: make(chan struct{}, 1), linkUp: make(chan struct{}, 1)}
+	a := &Agent{opts: opts, log: opts.Logger, startedAt: time.Now(), teleChanged: make(chan struct{}, 1), linkUp: make(chan struct{}, 1), ready: make(chan struct{})}
 	t := proto.Telemetry{}.WithDefaults()
 	a.telemetry.Store(&t)
 	return a
@@ -112,7 +116,7 @@ func (a *Agent) Run(parent context.Context) error {
 		}
 	}
 	_ = os.MkdirAll(filepath.Join(data, "tls"), 0o700)
-	os.Remove(filepath.Join(data, "bin", "screens-gateway.new"))
+	os.Remove(filepath.Join(data, "bin", "screens-gateway.new.part")) // interrupted download
 
 	store, err := config.NewStore(data)
 	if err != nil {
@@ -165,6 +169,7 @@ func (a *Agent) Run(parent context.Context) error {
 		defer a.opts.Handler.SetHook(nil)
 	}
 
+	close(a.ready)
 	var wg sync.WaitGroup
 	wg.Add(2)
 	go func() { defer wg.Done(); a.telemetryLoop(ctx) }()

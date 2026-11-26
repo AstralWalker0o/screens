@@ -171,19 +171,27 @@ func (st *stream) shutdown(code int, reason string) bool {
 		return false
 	}
 	st.m.remove(st)
-	st.cancel()
 	switch st.kind {
 	case "ws":
+		if !validWireCode(code) {
+			code = CloseNormal
+		}
+		// Close first (sends the close frame and waits for the peer's),
+		// then cancel: cancelling a Read context drops the TCP connection.
 		go func() {
-			if code == CloseAbnormal || code < 1000 || code > 4999 {
-				code = CloseNormal
-			}
 			_ = st.ws.Close(websocket.StatusCode(code), truncReason(reason))
+			st.cancel()
 		}()
 	case "tcp":
+		st.cancel()
 		_ = st.tcp.Close()
 	}
 	return true
+}
+
+// validWireCode reports whether a close code may be sent in a close frame.
+func validWireCode(c int) bool {
+	return (c >= 1000 && c <= 1003) || (c >= 1007 && c <= 1014) || (c >= 3000 && c <= 4999)
 }
 
 // closeAndNotify closes the device side and sends a close frame to the hub.
@@ -418,7 +426,13 @@ func (m *Manager) finishOpen(ctx context.Context, st *stream, data any) (any, er
 		case <-st.ctx.Done():
 		}
 	}()
-	return ops.After{Data: data, Fn: st.start}, nil
+	// The device reader/writer start once the open res is on the wire (the
+	// link runs After.Fn right after writing it), so stream frames never
+	// overtake the res. Hub → device frames that arrive earlier are queued.
+	// start is idempotent; the timer is only a safety net in case the hook
+	// never runs.
+	time.AfterFunc(2*time.Second, func() { st.start() })
+	return ops.After{Data: data, Fn: func() { st.start() }}, nil
 }
 
 type wsArgs struct {

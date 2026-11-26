@@ -78,7 +78,9 @@ func (u *Upstreams) SetURLs(urls []string) (invalid []string) {
 	return invalid
 }
 
-func (u *Upstreams) order(now time.Time) []string {
+// order returns the upstreams to try (healthy first, in configured order)
+// and whether all of them are currently marked down.
+func (u *Upstreams) order(now time.Time) ([]string, bool) {
 	u.mu.Lock()
 	defer u.mu.Unlock()
 	var healthy, down []string
@@ -89,7 +91,7 @@ func (u *Upstreams) order(now time.Time) []string {
 			healthy = append(healthy, s)
 		}
 	}
-	return append(healthy, down...)
+	return append(healthy, down...), len(healthy) == 0 && len(down) > 0
 }
 
 func (u *Upstreams) mark(s string, failed bool) {
@@ -111,7 +113,22 @@ func (u *Upstreams) failed() {
 // Exchange resolves q. The returned message has q's ID.
 func (u *Upstreams) Exchange(ctx context.Context, q *dns.Msg) (*dns.Msg, error) {
 	var lastErr error
-	for _, s := range u.order(time.Now()) {
+	list, allDown := u.order(time.Now())
+	triedFallback := false
+	if allDown && u.Fallback != "" {
+		// Every DoH upstream failed recently: answer from the fallback
+		// first instead of waiting out each DoH timeout. DoH upstreams are
+		// re-probed once their down window expires.
+		triedFallback = true
+		r, err := u.plain(ctx, q)
+		if err == nil {
+			r.Id = q.Id
+			return r, nil
+		}
+		u.failed()
+		lastErr = fmt.Errorf("fallback %s: %w", u.Fallback, err)
+	}
+	for _, s := range list {
 		r, err := u.doh(ctx, s, q)
 		if err == nil {
 			u.mark(s, false)
@@ -125,7 +142,7 @@ func (u *Upstreams) Exchange(ctx context.Context, q *dns.Msg) (*dns.Msg, error) 
 			return nil, ctx.Err()
 		}
 	}
-	if u.Fallback == "" {
+	if u.Fallback == "" || triedFallback {
 		if lastErr == nil {
 			lastErr = errors.New("no upstreams")
 		}

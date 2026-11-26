@@ -22,7 +22,7 @@ interface Pending { resolve: (v: any) => void; reject: (e: Error) => void; timer
 
 const TICK_MS = 60_000;
 const QUIET_COMMANDS = new Set(['key', 'text', 'tap', 'volume', 'mute', 'media', 'screenshot', 'refresh', 'apps', 'topology', 'mic_usage', 'launcher_status', 'welcome_show']);
-const JOB_COMMANDS = new Set(['install', 'uninstall', 'guest_reset', 'reboot', 'private_dns', 'shell', 'clear', 'disable', 'enable', 'restore', 'launcher_install', 'launcher_config', 'launcher_remove']);
+const JOB_COMMANDS = new Set(['install', 'uninstall', 'guest_reset', 'reboot', 'private_dns', 'shell', 'clear', 'disable', 'enable', 'restore', 'launcher_install', 'launcher_config', 'launcher_remove', 'debloat', 'revoke_permission', 'grant_permission']);
 const OFFLINE_AFTER_FAILS = 3;
 
 export class SiteHub extends DurableObject<Env> {
@@ -400,6 +400,9 @@ export class SiteHub extends DurableObject<Env> {
           const launcher = parseJson<any>(row.facts, {}).launcher;
           args = { packages: g.clear_packages, go_home: g.go_home, reboot: g.reboot, show_welcome: !!(g.show_welcome_after_reset && g.welcome.enabled && launcher?.installed) };
         }
+        if (command === 'debloat' && !Array.isArray(args.packages)) {
+          args = { packages: (await this.env.DB.prepare("SELECT package FROM app_catalog WHERE category = 'bloat'").all<Row>()).results.map((r) => r.package) };
+        }
         if (command === 'launcher_install' || command === 'launcher_config') {
           args = { ...args, config_b64: await this.launcherConfigB64(), force_home: siteSettings(await this.site()).guest.kiosk.force_home };
           if (command === 'launcher_install') {
@@ -407,7 +410,7 @@ export class SiteHub extends DurableObject<Env> {
           }
         }
         result = await adapter.command(ctx, command, args);
-        if (['install', 'uninstall', 'disable', 'enable', 'restore'].includes(command)) this.ctx.waitUntil(this.syncApps(row).catch(() => undefined));
+        if (['install', 'uninstall', 'disable', 'enable', 'restore', 'debloat', 'revoke_permission', 'grant_permission'].includes(command)) this.ctx.waitUntil(this.syncApps(row).catch(() => undefined));
       }
       if (row.status === 'offline' || row.status === 'unknown') this.ctx.waitUntil(this.updateDevice(row, { status: 'online', last_seen: now() }));
       if (jobId) await finishJob(this.env, jobId, result?.ok === false ? 'error' : 'ok', result);

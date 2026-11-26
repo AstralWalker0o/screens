@@ -271,6 +271,29 @@ export const android: Adapter = {
         return { ok: true };
       }
       case 'private_dns': return setPrivateDns(ctx, !!args.enabled, String(args.hostname ?? ''));
+      case 'revoke_permission':
+      case 'grant_permission': {
+        const p = assertPackage(args.package);
+        const perm = PRIVACY_PERMISSIONS[String(args.permission)];
+        if (!perm) throw new AdapterError('bad_args', `permission must be one of ${Object.keys(PRIVACY_PERMISSIONS).join(', ')}`);
+        const revoke = command === 'revoke_permission';
+        // pm revoke works for runtime permissions; appops covers apps (incl. system ones) where revoke is refused.
+        const r = await sh(ctx, `pm ${revoke ? 'revoke' : 'grant'} ${p} ${perm.permission} 2>&1; cmd appops set ${p} ${perm.op} ${revoke ? 'ignore' : 'allow'} 2>&1; echo "@@mode=$(cmd appops get ${p} ${perm.op} 2>&1 | head -1)"`);
+        const mode = parseMarkers(r.stdout).mode ?? '';
+        const ok = revoke ? /ignore|deny/.test(mode) || !/allow/.test(mode) : /allow|default/.test(mode);
+        return { ok, permission: args.permission, mode, output: r.stdout.replace(/@@mode=.*\n?/, '').trim().slice(0, 300) };
+      }
+      case 'debloat': {
+        // Disable (never uninstall) the packages Screens' catalog marks as bloat/telemetry. Reversible with "enable".
+        const targets = ((args.packages as string[]) ?? []).map(assertPackage);
+        const installed = new Set((await sh(ctx, 'pm list packages -e')).stdout.split('\n').map((l) => l.replace('package:', '').trim()));
+        const done: string[] = []; const failed: string[] = [];
+        for (const p of targets.filter((x) => installed.has(x))) {
+          const r = await sh(ctx, `pm disable-user --user 0 ${p} 2>&1`);
+          (/disabled/.test(r.stdout) ? done : failed).push(p);
+        }
+        return { ok: failed.length === 0, disabled: done, failed, skipped: targets.filter((x) => !installed.has(x)) };
+      }
       case 'mic_usage': {
         const r = await sh(ctx, 'dumpsys appops --op RECORD_AUDIO 2>/dev/null | head -400', 30_000);
         return parseMicUsage(r.stdout);
@@ -325,6 +348,14 @@ export const android: Adapter = {
 };
 
 export const LAUNCHER_PKG = 'au.supercluster.screens.launcher';
+
+/** Privacy-sensitive permissions the dashboard can revoke per app. */
+export const PRIVACY_PERMISSIONS: Record<string, { permission: string; op: string }> = {
+  microphone: { permission: 'android.permission.RECORD_AUDIO', op: 'RECORD_AUDIO' },
+  camera: { permission: 'android.permission.CAMERA', op: 'CAMERA' },
+  location: { permission: 'android.permission.ACCESS_FINE_LOCATION', op: 'FINE_LOCATION' },
+  contacts: { permission: 'android.permission.READ_CONTACTS', op: 'READ_CONTACTS' },
+};
 const STOCK_LAUNCHERS = ['com.google.android.tvlauncher', 'com.google.android.apps.tv.launcherx'];
 
 /** Parse `am broadcast` output: Broadcast completed: result=1, data="ok:..." */

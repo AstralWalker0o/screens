@@ -136,6 +136,7 @@ type Server struct {
 	bindWarn  map[string]bool
 	cert      atomic.Pointer[tls.Certificate]
 	ifaces    func() []netx.Iface
+	local     *netx.LocalNets
 
 	resync chan struct{}
 	stop   chan struct{}
@@ -156,6 +157,7 @@ func New(dataDir string, f *fetch.Client, log *slog.Logger) *Server {
 		dot:       map[string]*listener{},
 		bindWarn:  map[string]bool{},
 		ifaces:    func() []netx.Iface { all, _ := netx.List(); return all },
+		local:     netx.NewLocalNets(),
 		resync:    make(chan struct{}, 1),
 		stop:      make(chan struct{}),
 	}
@@ -186,7 +188,10 @@ func (s *Server) FlushCache() { s.cache.Flush() }
 func (s *Server) Apply(cfg Config) Status {
 	s.applyMu.Lock()
 	defer s.applyMu.Unlock()
-	var errs []string
+	errs := append([]string(nil), cfg.Warnings...)
+	for _, w := range cfg.Warnings {
+		s.log.Warn("dns config", "warning", w)
+	}
 	if bad := s.up.SetURLs(cfg.Upstreams); len(bad) > 0 {
 		for _, b := range bad {
 			errs = append(errs, "invalid upstream "+b)
@@ -380,6 +385,12 @@ func (s *Server) Close() {
 	s.policies.Close()
 }
 
+// clientAllowed accepts private/loopback sources and anything on one of
+// the host's own subnets (e.g. LAN clients with global IPv6 addresses).
+func (s *Server) clientAllowed(a netip.Addr) bool {
+	return guard.IsPrivateOrLoopback(a) || s.local.Contains(a)
+}
+
 func (s *Server) handlerFor(proto string) dns.Handler {
 	return dns.HandlerFunc(func(w dns.ResponseWriter, r *dns.Msg) { s.serve(w, r, proto) })
 }
@@ -407,8 +418,8 @@ func (s *Server) serve(w dns.ResponseWriter, req *dns.Msg, proto string) {
 	start := time.Now()
 	st := s.state.Load()
 	cip := addrOf(w.RemoteAddr())
-	if st == nil || !guard.IsPrivateOrLoopback(cip) {
-		// Never act as an open resolver for public sources.
+	if st == nil || !s.clientAllowed(cip) {
+		// Never act as an open resolver for off-link public sources.
 		m := new(dns.Msg)
 		m.SetRcode(req, dns.RcodeRefused)
 		_ = w.WriteMsg(m)
@@ -466,15 +477,13 @@ func (s *Server) serve(w dns.ResponseWriter, req *dns.Msg, proto string) {
 		}
 		resp.Truncate(size)
 	}
-	_ = w.WriteMsg(resp)
-
-	if cl.mode == ModeBypass || !st.cfg.Log.Enabled {
-		return
+	if cl.mode != ModeBypass && st.cfg.Log.Enabled {
+		entry.RCode = rcodeString(resp.Rcode)
+		entry.Answers = answers(resp)
+		entry.Ms = time.Since(start).Milliseconds()
+		s.qlog.Add(entry)
 	}
-	entry.RCode = rcodeString(resp.Rcode)
-	entry.Answers = answers(resp)
-	entry.Ms = time.Since(start).Milliseconds()
-	s.qlog.Add(entry)
+	_ = w.WriteMsg(resp)
 }
 
 func (s *Server) resolve(req *dns.Msg, st *state) (*dns.Msg, bool) {
@@ -495,6 +504,13 @@ func (s *Server) resolve(req *dns.Msg, st *state) (*dns.Msg, bool) {
 	resp, err := s.up.Exchange(ctx, q)
 	if err != nil {
 		s.log.Debug("dns upstream failure", "qname", req.Question[0].Name, "err", err)
+		if key != "" {
+			if m := s.cache.GetStale(key, time.Now()); m != nil {
+				m.Id = req.Id
+				m.Question = req.Question
+				return m, true
+			}
+		}
 		m := new(dns.Msg)
 		m.SetRcode(req, dns.RcodeServerFailure)
 		m.RecursionAvailable = true

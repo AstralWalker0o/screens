@@ -357,3 +357,87 @@ func TestAsText(t *testing.T) {
 		t.Fatal("binary")
 	}
 }
+
+func TestValidWireCode(t *testing.T) {
+	for c, want := range map[int]bool{1000: true, 1001: true, 1005: false, 1006: false, 1011: true, 1015: false, 2999: false, 3000: true, 4999: true, 5000: false} {
+		if validWireCode(c) != want {
+			t.Errorf("%d", c)
+		}
+	}
+}
+
+func TestHubCloseCodeReachesDevice(t *testing.T) {
+	defer guard.AllowLoopbackForTesting()()
+	m := newMgr(t)
+	got := make(chan websocket.StatusCode, 1)
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		c, err := websocket.Accept(w, r, nil)
+		if err != nil {
+			return
+		}
+		_, _, err = c.Read(r.Context())
+		got <- websocket.CloseStatus(err)
+	}))
+	defer srv.Close()
+	sink := newSink()
+	ctx := ops.WithSink(context.Background(), sink)
+	if _, err := call(t, ctx, m.WSOpen, `{"stream":"c1","url":"ws`+strings.TrimPrefix(srv.URL, "http")+`/"}`); err != nil {
+		t.Fatal(err)
+	}
+	code := 4001
+	reason := "user left"
+	m.Inbound(sink, &proto.Stream{T: "stream", Stream: "c1", Kind: "close", Code: &code, Reason: &reason})
+	select {
+	case c := <-got:
+		if c != 4001 {
+			t.Fatalf("device saw %v", c)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("device never saw close")
+	}
+	waitCount(t, m, 0)
+}
+
+func TestStreamStartOrdering(t *testing.T) {
+	defer guard.AllowLoopbackForTesting()()
+	m := newMgr(t)
+	srv := echoWS(t)
+	defer srv.Close()
+	sink := newSink()
+	ctx := ops.WithSink(context.Background(), sink)
+	u := "ws" + strings.TrimPrefix(srv.URL, "http") + "/"
+
+	// Nothing flows until the post-res hook runs; hub frames sent before
+	// that are queued, not lost.
+	d, err := m.WSOpen(ctx, json.RawMessage(`{"stream":"o1","url":"`+u+`"}`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	after := d.(ops.After)
+	m.Inbound(sink, proto.StreamText("o1", "early"))
+	select {
+	case f := <-sink.frames:
+		t.Fatalf("frame before res was written: %+v", f)
+	case <-time.After(200 * time.Millisecond):
+	}
+	after.Fn()
+	if f := sink.next(t); !strings.Contains(*f.Data, "ms.channel.connect") {
+		t.Fatalf("device greeting %+v", f)
+	}
+	if f := sink.next(t); *f.Data != "echo:early" {
+		t.Fatalf("queued hub frame %+v", f)
+	}
+
+	// If the hook never runs, the safety net starts the stream anyway.
+	if _, err := m.WSOpen(ctx, json.RawMessage(`{"stream":"o2","url":"`+u+`"}`)); err != nil {
+		t.Fatal(err)
+	}
+	select {
+	case f := <-sink.frames:
+		if f.Stream != "o2" || !strings.Contains(*f.Data, "ms.channel.connect") {
+			t.Fatalf("safety-net frame %+v", f)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("stream never started without the hook")
+	}
+}

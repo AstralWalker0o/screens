@@ -81,7 +81,7 @@ async function request(ctx: AdapterCtx, uri: string, payload?: unknown, timeoutM
   const s = await session(ctx);
   const id = `req_${s.seq++}`;
   s.stream.send(JSON.stringify({ type: 'request', id, uri: `ssap://${uri}`, ...(payload ? { payload } : {}) }));
-  const raw = await s.stream.next((m) => m.includes(`"${id}"`), timeoutMs);
+  const raw = await s.stream.next((m) => { try { return JSON.parse(m).id === id; } catch { return false; } }, timeoutMs);
   const msg = JSON.parse(raw);
   if (msg.type === 'error' || msg.payload?.returnValue === false) throw new AdapterError('failed', `LG ${uri}: ${msg.error ?? msg.payload?.errorText ?? 'failed'}`);
   return msg.payload ?? {};

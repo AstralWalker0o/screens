@@ -198,3 +198,16 @@ describe('launcher broadcast parsing', () => {
     expect(parseBroadcast('Error: no receiver').result).toBeNull();
   });
 });
+
+import { parseFavorites } from '../src/worker/adapters/sonos';
+describe('sonos favorites', () => {
+  it('parses FV:2 browse results', () => {
+    const r = '&lt;DIDL-Lite&gt;&lt;item id="FV:2/1"&gt;&lt;dc:title&gt;Triple J&lt;/dc:title&gt;&lt;res&gt;x-sonosapi-stream:s25065?sid=254&amp;amp;flags=8224&lt;/res&gt;&lt;r:resMD&gt;&amp;lt;DIDL-Lite&amp;gt;meta&amp;lt;/DIDL-Lite&amp;gt;&lt;/r:resMD&gt;&lt;/item&gt;&lt;item id="FV:2/2"&gt;&lt;dc:title&gt;Chill&lt;/dc:title&gt;&lt;res&gt;x-rincon-cpcontainer:1006206cspotify%3aplaylist%3a1&lt;/res&gt;&lt;/item&gt;&lt;/DIDL-Lite&gt;';
+    const f = parseFavorites(r);
+    expect(f).toHaveLength(2);
+    expect(f[0]).toMatchObject({ title: 'Triple J', kind: 'radio' });
+    expect(f[0].uri).toBe('x-sonosapi-stream:s25065?sid=254&flags=8224');
+    expect(f[0].meta).toBe('<DIDL-Lite>meta</DIDL-Lite>');
+    expect(f[1]).toMatchObject({ title: 'Chill', kind: 'playlist' });
+  });
+});

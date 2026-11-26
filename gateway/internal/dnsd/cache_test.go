@@ -35,8 +35,17 @@ func TestCacheTTL(t *testing.T) {
 	if c.Get(key, now.Add(100*time.Second)) != nil {
 		t.Fatal("not expired")
 	}
+	// Expired entries remain available for serve-stale.
+	st := c.GetStale(key, now.Add(time.Hour))
+	if st == nil || st.Answer[0].Header().Ttl != StaleTTL {
+		t.Fatalf("stale %v", st)
+	}
+	if c.GetStale(key, now.Add(100*time.Second+MaxStale+time.Second)) != nil {
+		t.Fatal("too stale")
+	}
+	c.Get(key, now.Add(100*time.Second+MaxStale+time.Second))
 	if c.Len() != 0 {
-		t.Fatal("expired entry not removed")
+		t.Fatal("ancient entry not removed")
 	}
 }
 

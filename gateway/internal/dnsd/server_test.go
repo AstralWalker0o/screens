@@ -11,6 +11,7 @@ import (
 	"net"
 	"net/http"
 	"net/http/httptest"
+	"net/netip"
 	"os"
 	"path/filepath"
 	"sync/atomic"
@@ -214,7 +215,7 @@ func TestServerEndToEnd(t *testing.T) {
 	}
 
 	// Monitor mode: answer from upstream, log would_block.
-	s.Apply(mustCfg(t, `{"listen":["`+addr+`"],"upstreams":["`+up.srv.URL+`/dns-query"],
+	s.Apply(mustCfg(t, `{"enabled":true,"listen":["`+addr+`"],"upstreams":["`+up.srv.URL+`/dns-query"],
 	  "clients":{"127.0.0.1":{"policy":"p1","mode":"monitor"}},
 	  "policies":{"p1":{"version":"`+polSHA+`","url":"`+up.srv.URL+`/agent/v1/files/p1","sha256":"`+polSHA+`"}}}`))
 	r = query(t, "udp", addr, "tracker.ads.test", dns.TypeA)
@@ -226,7 +227,7 @@ func TestServerEndToEnd(t *testing.T) {
 	}
 
 	// NXDOMAIN block response.
-	s.Apply(mustCfg(t, `{"listen":["`+addr+`"],"upstreams":["`+up.srv.URL+`/dns-query"],"block_response":"nxdomain",
+	s.Apply(mustCfg(t, `{"enabled":true,"listen":["`+addr+`"],"upstreams":["`+up.srv.URL+`/dns-query"],"block_response":"nxdomain",
 	  "clients":{"127.0.0.1":{"policy":"p1","mode":"enforce"}},
 	  "policies":{"p1":{"version":"`+polSHA+`","url":"`+up.srv.URL+`/agent/v1/files/p1","sha256":"`+polSHA+`"}}}`))
 	r = query(t, "udp", addr, "tracker.ads.test", dns.TypeA)
@@ -235,7 +236,7 @@ func TestServerEndToEnd(t *testing.T) {
 	}
 
 	// Missing policy → allow, rule policy_missing.
-	s.Apply(mustCfg(t, `{"listen":["`+addr+`"],"upstreams":["`+up.srv.URL+`/dns-query"],
+	s.Apply(mustCfg(t, `{"enabled":true,"listen":["`+addr+`"],"upstreams":["`+up.srv.URL+`/dns-query"],
 	  "default":{"policy":"p_missing","mode":"enforce"},
 	  "policies":{"p_missing":{"version":"v1","url":"`+up.srv.URL+`/agent/v1/files/nope"}}}`))
 	lastEntries(s)
@@ -248,12 +249,12 @@ func TestServerEndToEnd(t *testing.T) {
 	}
 
 	// Bypass → not logged; off → logged, no filtering.
-	s.Apply(mustCfg(t, `{"listen":["`+addr+`"],"upstreams":["`+up.srv.URL+`/dns-query"],"clients":{"127.0.0.1":{"mode":"bypass","block":["x.test"]}}}`))
+	s.Apply(mustCfg(t, `{"enabled":true,"listen":["`+addr+`"],"upstreams":["`+up.srv.URL+`/dns-query"],"clients":{"127.0.0.1":{"mode":"bypass","block":["x.test"]}}}`))
 	query(t, "udp", addr, "x.test", dns.TypeA)
 	if n := s.QueryLog().Len(); n != 0 {
 		t.Fatalf("bypass logged %d", n)
 	}
-	s.Apply(mustCfg(t, `{"listen":["`+addr+`"],"upstreams":["`+up.srv.URL+`/dns-query"],"clients":{"127.0.0.1":{"mode":"off","block":["x.test"]}}}`))
+	s.Apply(mustCfg(t, `{"enabled":true,"listen":["`+addr+`"],"upstreams":["`+up.srv.URL+`/dns-query"],"clients":{"127.0.0.1":{"mode":"off","block":["x.test"]}}}`))
 	r = query(t, "udp", addr, "x.test", dns.TypeA)
 	if len(r.Answer) != 1 || r.Answer[0].(*dns.A).A.String() != "93.184.216.34" {
 		t.Fatalf("off mode filtered: %v", r)
@@ -314,6 +315,36 @@ func TestUpstreamFailoverAndFallback(t *testing.T) {
 	if err != nil || len(r.Answer) != 1 || fallbackHits.Load() != 1 {
 		t.Fatalf("fallback: %v %v hits=%d", r, err, fallbackHits.Load())
 	}
+	// With every DoH upstream marked down, the fallback is tried first.
+	badHits, goodHits := bad.dohHits.Load(), good.dohHits.Load()
+	if _, err := u.Exchange(t.Context(), q); err != nil {
+		t.Fatal(err)
+	}
+	if fallbackHits.Load() != 2 || bad.dohHits.Load() != badHits || good.dohHits.Load() != goodHits {
+		t.Fatalf("fallback-first: fb=%d bad=%d good=%d", fallbackHits.Load(), bad.dohHits.Load(), good.dohHits.Load())
+	}
+}
+
+func TestServeStale(t *testing.T) {
+	up := newFakeUpstream(t)
+	s := New(t.TempDir(), nil, testLogger())
+	defer s.Close()
+	s.SetInterfaceSource(func() []netx.Iface { return nil })
+	s.Upstreams().Fallback = ""
+	st := s.Apply(mustCfg(t, `{"enabled":true,"listen":["127.0.0.1:0"],"upstreams":["`+up.srv.URL+`/dns-query"],"cache":{"enabled":true,"max_ttl_s":1}}`))
+	addr := st.Listening[0]
+	if r := query(t, "udp", addr, "stale.test", dns.TypeA); len(r.Answer) != 1 {
+		t.Fatalf("prime: %v", r)
+	}
+	up.fail.Store(true)
+	time.Sleep(1100 * time.Millisecond)
+	r := query(t, "udp", addr, "stale.test", dns.TypeA)
+	if r.Rcode != dns.RcodeSuccess || len(r.Answer) != 1 || r.Answer[0].Header().Ttl != StaleTTL {
+		t.Fatalf("stale: %v", r)
+	}
+	if r := query(t, "udp", addr, "never-seen.test", dns.TypeA); r.Rcode != dns.RcodeServerFailure {
+		t.Fatalf("uncached: %v", r)
+	}
 }
 
 func TestPolicyFromCacheWithoutNetwork(t *testing.T) {
@@ -321,7 +352,7 @@ func TestPolicyFromCacheWithoutNetwork(t *testing.T) {
 	polGz, polSHA := gz(t, "b blocked.test\n")
 	up.policies["p1"] = polGz
 	dir := t.TempDir()
-	cfg := mustCfg(t, `{"listen":["127.0.0.1:0"],"upstreams":["`+up.srv.URL+`/dns-query"],
+	cfg := mustCfg(t, `{"enabled":true,"listen":["127.0.0.1:0"],"upstreams":["`+up.srv.URL+`/dns-query"],
 	  "default":{"policy":"p1","mode":"enforce"},
 	  "policies":{"p1":{"version":"`+polSHA+`","url":"`+up.srv.URL+`/agent/v1/files/p1","sha256":"`+polSHA+`"}}}`)
 	s := New(dir, fetch.New(up.srv.URL), testLogger())
@@ -353,22 +384,33 @@ func TestPolicyFromCacheWithoutNetwork(t *testing.T) {
 }
 
 func TestParseConfigValidation(t *testing.T) {
-	bad := []string{
-		`{"block_response":"refused"}`,
-		`{"default":{"mode":"block"}}`,
-		`{"clients":{"not-an-ip":{"mode":"enforce"}}}`,
-		`{"policies":{"../etc/passwd":{"version":"x"}}}`,
+	if _, err := ParseConfig(json.RawMessage(`{"clients":`)); err == nil {
+		t.Fatal("malformed JSON accepted")
 	}
-	for _, b := range bad {
-		if _, err := ParseConfig(json.RawMessage(b)); err == nil {
-			t.Errorf("accepted %s", b)
-		}
-	}
-	cfg, err := ParseConfig(json.RawMessage(`{"clients":{"10.0.0.1":{}}}`))
+	cfg, err := ParseConfig(json.RawMessage(`{"enabled":true,"block_response":"refused","default":{"mode":"block"},
+	  "clients":{"not-an-ip":{"mode":"enforce"},"10.0.0.2":{"mode":"weird"},"10.0.0.3":{"mode":"enforce","policy":null}},
+	  "policies":{"../etc/passwd":{"version":"x"},"p_ok":{"version":"y"}},
+	  "dot":{"enabled":false,"hostname":null}}`))
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !cfg.Enabled || cfg.Clients["10.0.0.1"].Mode != ModeMonitor || cfg.Cache.MaxEntries != 20000 || !cfg.Log.Enabled || len(cfg.Upstreams) != 2 {
+	if len(cfg.Warnings) != 5 {
+		t.Fatalf("warnings %v", cfg.Warnings)
+	}
+	if cfg.BlockResponse != "null" || cfg.Default.Mode != ModeMonitor || cfg.Clients["10.0.0.2"].Mode != ModeMonitor || cfg.Clients["10.0.0.3"].Mode != ModeEnforce {
+		t.Fatalf("sanitised %+v", cfg)
+	}
+	if _, ok := cfg.Clients["not-an-ip"]; ok {
+		t.Fatal("bad client kept")
+	}
+	if _, ok := cfg.Policies["../etc/passwd"]; ok || len(cfg.Policies) != 1 {
+		t.Fatal("unsafe policy kept")
+	}
+	cfg, err = ParseConfig(json.RawMessage(`{"clients":{"10.0.0.1":{}}}`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cfg.Enabled || cfg.Clients["10.0.0.1"].Mode != ModeMonitor || cfg.Cache.MaxEntries != 20000 || !cfg.Log.Enabled || len(cfg.Upstreams) != 2 || len(cfg.Warnings) != 0 {
 		t.Fatalf("defaults %+v", cfg)
 	}
 }
@@ -382,8 +424,27 @@ func TestBindFailureKeepsOthers(t *testing.T) {
 	s := New(t.TempDir(), nil, testLogger())
 	defer s.Close()
 	s.SetInterfaceSource(func() []netx.Iface { return nil })
-	st := s.Apply(mustCfg(t, `{"listen":["`+busy.LocalAddr().String()+`","127.0.0.1:0"]}`))
+	st := s.Apply(mustCfg(t, `{"enabled":true,"listen":["`+busy.LocalAddr().String()+`","127.0.0.1:0"]}`))
 	if len(st.Listening) != 1 || len(st.Errors) != 1 {
 		t.Fatalf("%+v", st)
+	}
+}
+
+func TestClientAllowed(t *testing.T) {
+	s := New(t.TempDir(), nil, testLogger())
+	defer s.Close()
+	s.local.Set(netip.MustParsePrefix("2001:db8:20::/64"), netip.MustParsePrefix("192.0.2.0/24"))
+	for ip, want := range map[string]bool{
+		"10.0.20.31":     true,
+		"127.0.0.1":      true,
+		"fe80::1":        true,
+		"2001:db8:20::9": true,  // global IPv6 on a local subnet
+		"192.0.2.77":     true,  // public IPv4 LAN
+		"2001:db8:99::9": false, // off-link public
+		"8.8.8.8":        false,
+	} {
+		if got := s.clientAllowed(netip.MustParseAddr(ip)); got != want {
+			t.Errorf("%s: %v", ip, got)
+		}
 	}
 }

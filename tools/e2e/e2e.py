@@ -168,6 +168,10 @@ def main():
             check('android tap maps to screen coords', r['data'].get('x') == 960 and r['data'].get('y') == 540, json.dumps(r))
             r = api('POST', f'/api/devices/{sh}/command', {'command': 'disable', 'args': {'package': 'com.nvidia.tegrazone3'}})
             check('android disable app', r['ok'], json.dumps(r))
+            r = api('POST', f'/api/devices/{sh}/command', {'command': 'revoke_permission', 'args': {'package': 'com.spotify.tv.android', 'permission': 'microphone'}})
+            check('android revoke microphone for an app', r['ok'] and 'ignore' in r['data'].get('mode', ''), json.dumps(r)[:300])
+            r = api('POST', f'/api/devices/{sh}/command', {'command': 'debloat'})
+            check('android debloat disables catalogued bloat only', r['ok'] and 'com.nvidia.tegrazone3' in r['data'].get('disabled', []) + r['data'].get('skipped', []) and 'com.netflix.ninja' not in r['data'].get('disabled', []), json.dumps(r)[:300])
             r = api('POST', f'/api/devices/{sh}/command', {'command': 'shell', 'args': {'cmd': 'echo hello'}})
             check('android shell console', 'hello' in r['data'].get('stdout', ''), json.dumps(r))
             try:
@@ -228,6 +232,9 @@ def main():
             r = api('POST', f'/api/devices/{tv}/command', {'command': 'launch', 'args': {'app_id': '3201907018807'}})
             ok = wait(lambda: any(e['event'] == 'ed.apps.launch' for e in sim_events('samsung.emit', t4)), 5, 0.3)
             check('samsung launch app', ok)
+            r = api('POST', f'/api/devices/{tv}/command', {'command': 'input', 'args': {'source': 'HDMI2'}})
+            ok = wait(lambda: any(e['key'] == 'KEY_HDMI2' for e in sim_events('samsung.key', t4)), 5, 0.3)
+            check('samsung input switch', r['ok'] and ok)
             r = api('POST', f'/api/devices/{tv}/command', {'command': 'volume', 'args': {'level': 30}})
             check('samsung absolute volume (UPnP)', r['ok'] and sim_events('samsung.upnp', t4))
 
@@ -244,6 +251,14 @@ def main():
             r = api('POST', f'/api/devices/{s2}/command', {'command': 'group', 'args': {'coordinator_id': s1}})
             d2 = api('POST', f'/api/devices/{s2}/command', {'command': 'refresh'})['data']
             check('sonos group join', d2['facts']['group']['coordinator'].endswith('01400') and not d2['facts']['group']['is_coordinator'], json.dumps(d2['facts'].get('group')))
+            favs = api('POST', f'/api/devices/{s1}/command', {'command': 'favorites'})['data']
+            check('sonos favourites listed', [f['title'] for f in favs] == ['Triple J', 'Chill Mix'] and favs[0]['kind'] == 'radio', json.dumps(favs)[:300])
+            r = api('POST', f'/api/devices/{s1}/command', {'command': 'play_favorite', 'args': {'uri': favs[1]['uri'], 'meta': favs[1]['meta']}})
+            check('sonos play favourite playlist (queued)', r['ok'] and any(e['action'] == 'AddURIToQueue' for e in sim_events('sonos.soap', t5)))
+            r = api('POST', f'/api/devices/{s1}/command', {'command': 'eq', 'args': {'bass': 4, 'treble': -2, 'loudness': False}})
+            check('sonos EQ set + read back', r['data']['eq']['bass'] == 4 and r['data']['eq']['treble'] == -2 and r['data']['eq']['loudness'] is False, json.dumps(r)[:300])
+            r = api('POST', f'/api/devices/{s1}/command', {'command': 'sleep_timer', 'args': {'minutes': 45}})
+            check('sonos sleep timer', r['ok'] and r['data']['minutes'] == 45)
             r = api('POST', f'/api/devices/{s2}/command', {'command': 'media', 'args': {'action': 'pause'}})
             acts = [(e['ip'], e['action']) for e in sim_events('sonos.soap', t5)]
             check('sonos transport goes to group coordinator', ('10.99.0.30', 'Pause') in acts, str(acts[-5:]))

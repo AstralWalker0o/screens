@@ -341,3 +341,47 @@ func DirectedBroadcast(p netip.Prefix) (netip.Addr, bool) {
 	v |= (1 << hostBits) - 1
 	return netip.AddrFrom4([4]byte{byte(v >> 24), byte(v >> 16), byte(v >> 8), byte(v)}), true
 }
+
+// LocalNets reports whether an address is on one of the host's directly
+// connected subnets (or is a host address), refreshed every few seconds.
+type LocalNets struct {
+	mu       sync.Mutex
+	prefixes []netip.Prefix
+	fetched  time.Time
+	ttl      time.Duration
+	static   bool
+}
+
+// NewLocalNets creates a tracker.
+func NewLocalNets() *LocalNets { return &LocalNets{ttl: 5 * time.Second} }
+
+// Set replaces the prefix list (tests).
+func (l *LocalNets) Set(p ...netip.Prefix) {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	l.prefixes, l.static = p, true
+}
+
+// Contains reports whether a is on-link.
+func (l *LocalNets) Contains(a netip.Addr) bool {
+	a = a.Unmap().WithZone("")
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	if !l.static && (l.prefixes == nil || time.Since(l.fetched) > l.ttl) {
+		l.prefixes = l.prefixes[:0]
+		if all, err := List(); err == nil {
+			for _, i := range all {
+				for _, p := range i.Prefixes {
+					l.prefixes = append(l.prefixes, p.Masked())
+				}
+			}
+		}
+		l.fetched = time.Now()
+	}
+	for _, p := range l.prefixes {
+		if p.Contains(a) {
+			return true
+		}
+	}
+	return false
+}

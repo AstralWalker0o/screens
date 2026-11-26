@@ -585,19 +585,16 @@ func TestOfflineStartFromPersistedConfig(t *testing.T) {
 	done := make(chan struct{})
 	go func() { _ = a.Run(ctx); close(done) }()
 	defer func() { cancel(); <-done }()
-	var addr string
-	for i := 0; i < 100; i++ {
-		if a.dns != nil {
-			if st := a.dns.Status(); len(st.Listening) == 1 {
-				addr = st.Listening[0]
-				break
-			}
-		}
-		time.Sleep(20 * time.Millisecond)
+	select {
+	case <-a.Ready():
+	case <-time.After(5 * time.Second):
+		t.Fatal("agent not ready")
 	}
-	if addr == "" {
-		t.Fatal("dns did not start from persisted config")
+	st := a.dns.Status()
+	if len(st.Listening) != 1 {
+		t.Fatalf("dns did not start from persisted config: %+v", st)
 	}
+	addr := st.Listening[0]
 	c := &dns.Client{Timeout: 3 * time.Second}
 	m := new(dns.Msg)
 	m.SetQuestion("blocked.test.", dns.TypeA)
@@ -646,4 +643,99 @@ func TestSysRestartExits(t *testing.T) {
 		t.Fatal("did not exit")
 	}
 	<-done
+}
+
+// TestWSSDeviceSpeaksFirst mimics a Samsung TV: a self-signed wss:// server
+// that sends ms.channel.connect immediately after the handshake, before the
+// hub sends anything. The hub also writes to the stream the instant the
+// ws.open res arrives; that frame must reach the device.
+func TestWSSDeviceSpeaksFirst(t *testing.T) {
+	defer guard.AllowLoopbackForTesting()()
+	hub := newFakeHub(t)
+	got := make(chan string, 4)
+	dev := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		c, err := websocket.Accept(w, r, nil)
+		if err != nil {
+			return
+		}
+		defer c.CloseNow()
+		_ = c.Write(r.Context(), websocket.MessageText, []byte(`{"data":{"clients":[],"id":"x","token":"12345678"},"event":"ms.channel.connect"}`))
+		for {
+			_, b, err := c.Read(r.Context())
+			if err != nil {
+				return
+			}
+			got <- string(b)
+			_ = c.Write(r.Context(), websocket.MessageText, append([]byte("ack:"), b...))
+		}
+	}))
+	defer dev.Close()
+
+	a := New(Options{CentralURL: hub.srv.URL, EnrollToken: "enr_test", DataDir: t.TempDir(), Logger: slog.New(slog.NewTextHandler(io.Discard, nil))})
+	ctx, cancel := context.WithCancel(context.Background())
+	done := make(chan struct{})
+	go func() { _ = a.Run(ctx); close(done) }()
+	defer func() { cancel(); <-done }()
+	hc := <-hub.conns
+	<-hc.hello
+
+	for i, scheme := range []string{"wss", "wss"} {
+		id := "s_tv" + strconv.Itoa(i)
+		u := scheme + strings.TrimPrefix(dev.URL, "https") + "/api/v2/channels/samsung.remote.control?name=U2NyZWVucw%3D%3D&token=12345678"
+		// Send the req and, the moment the res arrives, a hub→device frame.
+		resCh := make(chan map[string]any, 1)
+		hc.mu.Lock()
+		hc.res["open_"+id] = resCh
+		hc.mu.Unlock()
+		hc.send(map[string]any{"t": "req", "id": "open_" + id, "op": "ws.open", "args": map[string]any{"stream": id, "url": u, "insecure_tls": true}, "timeout_ms": 15000})
+		select {
+		case r := <-resCh:
+			if r["ok"] != true {
+				t.Fatalf("ws.open %v", r)
+			}
+		case <-time.After(10 * time.Second):
+			t.Fatal("no ws.open res")
+		}
+		hc.send(map[string]any{"t": "stream", "stream": id, "kind": "text", "data": `{"method":"ms.remote.control","params":{"Cmd":"Click","DataOfCmd":"KEY_HOME"}}`})
+
+		var frames []map[string]any
+		deadline := time.After(10 * time.Second)
+		for len(frames) < 2 {
+			select {
+			case f := <-hc.stream:
+				if f["stream"] == id {
+					frames = append(frames, f)
+				}
+			case <-deadline:
+				t.Fatalf("%s: got %d stream frames: %v", id, len(frames), frames)
+			}
+		}
+		if !strings.Contains(frames[0]["data"].(string), "ms.channel.connect") {
+			t.Fatalf("first frame %v", frames[0])
+		}
+		if !strings.HasPrefix(frames[1]["data"].(string), "ack:") {
+			t.Fatalf("second frame %v", frames[1])
+		}
+		select {
+		case m := <-got:
+			if !strings.Contains(m, "KEY_HOME") {
+				t.Fatalf("device got %q", m)
+			}
+		case <-time.After(5 * time.Second):
+			t.Fatal("device never got the hub frame")
+		}
+		// The stream must survive past the request context's lifetime.
+		time.Sleep(200 * time.Millisecond)
+		hc.send(map[string]any{"t": "stream", "stream": id, "kind": "text", "data": "later"})
+		select {
+		case m := <-got:
+			if m != "later" {
+				t.Fatalf("device got %q", m)
+			}
+		case <-time.After(5 * time.Second):
+			t.Fatal("stream died after the req finished")
+		}
+		<-hc.stream // ack:later
+		okData(t, hc.call("stream.close", map[string]any{"stream": id}, 5*time.Second))
+	}
 }

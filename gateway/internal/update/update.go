@@ -1,8 +1,11 @@
 // Package update implements the binary swap behind sys.update
-// (PROTOCOL.md §5 System): download to $DATA/bin/screens-gateway.new,
+// (PROTOCOL.md §5 System): download to $DATA/bin/screens-gateway.new.part,
 // verify sha256 and that it is an executable for this architecture,
-// chmod 755 and rename over $DATA/bin/screens-gateway. The caller replies
-// and exits 0 so Docker restarts on the new binary.
+// chmod 755, rename to screens-gateway.new and then over
+// $DATA/bin/screens-gateway. The caller replies and exits 0 so Docker
+// restarts on the new binary. A screens-gateway.new file therefore only
+// ever holds a verified binary, so an entrypoint that installs a leftover
+// .new on start is safe.
 package update
 
 import (
@@ -68,20 +71,25 @@ func Apply(ctx context.Context, f *fetch.Client, dataDir, url, sha string) error
 	if err := os.MkdirAll(filepath.Dir(dst), 0o755); err != nil {
 		return err
 	}
-	tmp := dst + ".new"
-	if _, err := f.Download(ctx, url, tmp, sha, MaxBinary); err != nil {
+	part := dst + ".new.part"
+	staged := dst + ".new"
+	if _, err := f.Download(ctx, url, part, sha, MaxBinary); err != nil {
 		return err
 	}
-	if err := CheckELF(tmp); err != nil {
-		os.Remove(tmp)
+	if err := CheckELF(part); err != nil {
+		os.Remove(part)
 		return proto.Errf(proto.CodeFailed, "%v", err)
 	}
-	if err := os.Chmod(tmp, 0o755); err != nil {
-		os.Remove(tmp)
+	if err := os.Chmod(part, 0o755); err != nil {
+		os.Remove(part)
 		return err
 	}
-	if err := os.Rename(tmp, dst); err != nil {
-		os.Remove(tmp)
+	if err := os.Rename(part, staged); err != nil {
+		os.Remove(part)
+		return err
+	}
+	if err := os.Rename(staged, dst); err != nil {
+		os.Remove(staged)
 		return err
 	}
 	return nil
