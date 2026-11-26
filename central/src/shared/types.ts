@@ -80,7 +80,17 @@ export interface KioskConfig {
 export type * from './sonos';
 
 /** Screens Launcher state on an Android device (Device.facts.launcher). */
-export interface LauncherState { installed: boolean; version?: string | null; config_sha?: string | null; is_home?: boolean; checked_at?: number }
+export interface LauncherState {
+  installed: boolean; version?: string | null; config_sha?: string | null; is_home?: boolean; checked_at?: number;
+  // Launcher v2 STATUS fields (docs/LAUNCHER-V2.md §1.3)
+  version_code?: number | null; config_v?: number | null; assets?: string[]; missing_assets?: string[]; last_error?: string | null;
+  // What Screens last sent (recorded by the hub's push pipeline)
+  pushed_at?: number | null; pushed_sha?: string | null; pushed_v?: 1 | 2 | null; push_error?: string | null;
+  layout_id?: string | null; assets_pushed?: number;
+}
+
+/** Screens Launcher v2 layouts, assets and rollout state live in ./launcher. */
+export type * from './launcher';
 
 export interface BulkCommandRequest { device_ids: string[]; command: string; args?: Record<string, unknown> }
 export interface BulkCommandResult { results: { device_id: string; name?: string; ok: boolean; error?: string; data?: unknown }[] }

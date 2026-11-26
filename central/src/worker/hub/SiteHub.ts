@@ -21,6 +21,7 @@ import { chunk, dayKey, hourKey, HttpError, isDotLabel, isPrivateIPv4, normMac, 
 import { scoreDevice } from '../privacy/score';
 import { seed } from '../lib/seed';
 import { RelayStream } from './stream';
+import { expectedFor, launcherPayload } from '../lib/launcher';
 import { checkControl, mirrorOptions, type MirrorOptions, RESET_VIDEO, SCRCPY_DEVICE_PATH, SCRCPY_R2_KEY, SCRCPY_SHA256, ScrcpyVideoParser, serverCommand, type StreamMeta } from './mirror';
 
 interface Pending { resolve: (v: any) => void; reject: (e: Error) => void; timer: ReturnType<typeof setTimeout> }
@@ -272,6 +273,7 @@ export class SiteHub extends DurableObject<Env> {
     }));
     this.setKv('offline_since', null);
     this.setKv('dns_refresh', true); // re-read DNS listener state once the welcome config has been applied
+    this.setKv('launcher_reconcile', true); // boxes may have missed layout changes while the gateway was away
     await resolveAlert(this.env, `gw_offline:${this.siteId}`);
     this.broadcast({ type: 'gateway', status: 'online', gateway: { hostname: h.hostname, version: h.version } });
     this.ctx.waitUntil(this.fireEvent('gateway.online', {}));
@@ -522,8 +524,11 @@ export class SiteHub extends DurableObject<Env> {
         if (command === 'debloat' && !Array.isArray(args.packages)) {
           args = { packages: (await this.env.DB.prepare("SELECT package FROM app_catalog WHERE category = 'bloat'").all<Row>()).results.map((r) => r.package) };
         }
-        if (command === 'launcher_install' || command === 'launcher_config') {
-          args = { ...args, config_b64: await this.launcherConfigB64(), force_home: siteSettings(await this.site()).guest.kiosk.force_home };
+        if (command === 'launcher_install' || command === 'launcher_config' || command === 'launcher_home') {
+          const site = await this.site();
+          // Per device: v1 + v2 configs and the images the v2 one needs (docs/LAUNCHER-V2.md).
+          if (command !== 'launcher_home') args = { ...args, ...(await launcherPayload(this.env, site, row)) };
+          args = { ...args, force_home: siteSettings(site).guest.kiosk.force_home };
           if (command === 'launcher_install') {
             args.apk = await this.env.DB.prepare("SELECT r2_key, sha256, version_name FROM apks WHERE package = 'au.supercluster.screens.launcher' ORDER BY coalesce(version_code, 0) DESC, uploaded_at DESC LIMIT 1").first<Row>();
           }
@@ -990,31 +995,48 @@ export class SiteHub extends DurableObject<Env> {
   }
 
   // ---------------------------------------------------------------- Screens Launcher (kiosk + welcome)
-  /** Config JSON for the Android TV launcher (docs/LAUNCHER.md), base64-encoded for `am broadcast --es`. */
+  /** v1 config JSON for the Android TV launcher (docs/LAUNCHER.md), base64-encoded for `am broadcast --es`. */
   async launcherConfigB64(): Promise<string> {
-    const site = await this.site();
-    const g = siteSettings(site).guest;
-    const cfg = {
-      v: 1, site_name: site.name, accent: g.welcome.accent,
-      kiosk: { enabled: g.kiosk.enabled, allowed: g.kiosk.allowed, pin_sha256: kioskPinHash(site) },
-      pinned: g.kiosk.pinned,
-      welcome: {
-        enabled: g.welcome.enabled, show_on_boot: g.welcome.show_on_boot, title: g.welcome.title || `Welcome to ${site.name}`,
-        message: g.welcome.message, wifi: g.welcome.wifi, sections: g.welcome.sections, contact: g.welcome.contact,
-      },
-    };
-    return b64Encode(new TextEncoder().encode(JSON.stringify(cfg)));
+    return (await launcherPayload(this.env, await this.site(), null)).config_b64;
   }
 
-  /** Re-send launcher config to every Android device that has the launcher installed. */
-  async pushLauncherConfig(): Promise<{ device_id: string; ok: boolean }[]> {
+  /** Re-send launcher config to every Android device that has the launcher installed (or just `deviceIds`). */
+  async pushLauncherConfig(deviceIds?: string[], actor = 'system'): Promise<{ device_id: string; ok: boolean; detail?: string }[]> {
     if (!this.online) return [];
     const devices = (await this.env.DB.prepare("SELECT id, facts FROM devices WHERE site_id = ? AND kind = 'android' AND status IN ('online','standby')").bind(this.siteId).all<Row>()).results
-      .filter((d) => parseJson<any>(d.facts, {}).launcher?.installed);
+      .filter((d) => parseJson<any>(d.facts, {}).launcher?.installed && (!deviceIds || deviceIds.includes(d.id)));
     return Promise.all(devices.map(async (d) => {
-      try { const r = await this.command(d.id, 'launcher_config', {}, 'system'); return { device_id: d.id, ok: r?.ok !== false }; }
-      catch { return { device_id: d.id, ok: false }; }
+      try { const r = await this.command(d.id, 'launcher_config', {}, actor); return { device_id: d.id, ok: r?.ok !== false, detail: r?.detail }; }
+      catch (e: any) { return { device_id: d.id, ok: false, detail: String(e?.message ?? e) }; }
     }));
+  }
+
+  /**
+   * Bring launchers back in line after a reconnect (or periodically): read STATUS quietly and push only
+   * when the box's config SHA differs from what it should have, or it still misses images (retried at most every 30 min).
+   */
+  async launcherReconcile(deviceIds?: string[]): Promise<{ device_id: string; pushed: boolean; ok: boolean }[]> {
+    if (!this.online) return [];
+    const site = await this.site();
+    const rows = (await this.env.DB.prepare("SELECT * FROM devices WHERE site_id = ? AND kind = 'android' AND status IN ('online','standby')").bind(this.siteId).all<Row>()).results
+      .filter((d) => parseJson<any>(d.facts, {}).launcher?.installed && (!deviceIds || deviceIds.includes(d.id)));
+    const cache = new Map();
+    const out: { device_id: string; pushed: boolean; ok: boolean }[] = [];
+    for (const row of rows) {
+      try {
+        const st = await adapterFor('android').command(this.makeCtx(row), 'launcher_status', {});
+        const status = st?.status;
+        if (!status?.installed) { out.push({ device_id: row.id, pushed: false, ok: true }); continue; }
+        const want = expectedFor(await launcherPayload(this.env, site, row, cache), status);
+        const missing = (status.missing_assets?.length ?? 0) > 0 && now() - (status.pushed_at ?? 0) > 30 * 60_000;
+        if (status.config_sha === want.sha && !missing) { out.push({ device_id: row.id, pushed: false, ok: true }); continue; }
+        const r = await this.command(row.id, 'launcher_config', {}, 'system');
+        out.push({ device_id: row.id, pushed: true, ok: r?.ok !== false });
+      } catch {
+        out.push({ device_id: row.id, pushed: false, ok: false });
+      }
+    }
+    return out;
   }
 
   // ---------------------------------------------------------------- automations
@@ -1123,6 +1145,10 @@ export class SiteHub extends DurableObject<Env> {
         await this.probeDevices();
         if (due('refresh', 5 * 60_000)) await this.refreshAll();
         if (due('inventory', 6 * 3_600_000)) await this.inventoryAll();
+        if (this.kv<boolean>('launcher_reconcile', false) || due('launcher', 30 * 60_000)) {
+          this.setKv('launcher_reconcile', false);
+          await this.launcherReconcile().catch(() => undefined);
+        }
       } else {
         const since = this.kv<number | null>('offline_since', null);
         if (since && t - since > 3 * 60_000) {
@@ -1165,6 +1191,7 @@ export class SiteHub extends DurableObject<Env> {
         if (d.status === 'offline') {
           await resolveAlert(this.env, `dev_offline:${d.id}`);
           this.ctx.waitUntil(this.fireEvent('device.online', { device_id: d.id }));
+          if (d.kind === 'android') this.ctx.waitUntil(this.launcherReconcile([d.id]).catch(() => undefined));
         }
       } else {
         const n = ((this.sql.exec('SELECT n FROM probe_fails WHERE device_id = ?', d.id).toArray()[0]?.n as number) ?? 0) + 1;
@@ -1274,6 +1301,7 @@ export class SiteHub extends DurableObject<Env> {
       gatewayAction: this.gatewayAction, disconnectAgent: this.disconnectAgent, guestReset: this.guestReset, enforceApps: this.enforceApps,
       runAutomation: this.runAutomation, retryDotNow: this.requestDot, pushDnsConfig: this.pushDnsConfig, pushMdnsConfig: this.pushMdnsConfig, status: this.status,
       requestDot: this.requestDot, flushAggregates: this.flushAggregates, pushLauncherConfig: this.pushLauncherConfig,
+      launcherReconcile: this.launcherReconcile,
       sonosOverview: this.sonosOverview, sonosArt: this.sonosArt,
     };
     const fn = allowed[method];
