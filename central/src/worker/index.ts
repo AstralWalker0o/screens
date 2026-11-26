@@ -73,6 +73,7 @@ async function scheduled(controller: ScheduledController, env: Env, ctx: Executi
       env.DB.prepare('DELETE FROM dns_hourly WHERE hour < ?').bind(t - 35 * 86_400_000),
       env.DB.prepare('DELETE FROM jobs WHERE created_at < ?').bind(t - 90 * 86_400_000),
       env.DB.prepare('DELETE FROM audit_log WHERE at < ?').bind(t - 365 * 86_400_000),
+      env.DB.prepare('DELETE FROM diag_log WHERE at < ?').bind(t - 7 * 86_400_000),
       env.DB.prepare('DELETE FROM alerts WHERE resolved_at IS NOT NULL AND resolved_at < ?').bind(t - 90 * 86_400_000),
       env.DB.prepare('DELETE FROM enrollment_tokens WHERE expires_at < ?').bind(t - 7 * 86_400_000),
       env.DB.prepare('DELETE FROM discovered WHERE last_seen < ?').bind(t - 30 * 86_400_000),

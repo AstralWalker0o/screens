@@ -29,6 +29,9 @@ const TICK_MS = 60_000;
 const QUIET_COMMANDS = new Set(['key', 'text', 'tap', 'volume', 'mute', 'media', 'screenshot', 'refresh', 'apps', 'topology', 'mic_usage', 'launcher_status', 'welcome_show']);
 const JOB_COMMANDS = new Set(['install', 'uninstall', 'guest_reset', 'reboot', 'private_dns', 'shell', 'clear', 'disable', 'enable', 'restore', 'launcher_install', 'launcher_config', 'launcher_remove', 'debloat', 'revoke_permission', 'grant_permission']);
 const OFFLINE_AFTER_FAILS = 3;
+/** Gateway ops that are slow by design (not reported as "slow" in diag_log). */
+const SLOW_BY_DESIGN = new Set(['adb.push', 'adb.install', 'net.scan', 'net.mdns_browse', 'net.ssdp_search', 'net.discover', 'tls.csr', 'update.apply', 'adb.pair']);
+
 /** Background status reads: their failures don't replace a device's last_error. */
 const STATUS_READS = new Set(['refresh', 'status', 'topology', 'apps']);
 
@@ -202,9 +205,29 @@ export class SiteHub extends DurableObject<Env> {
   }
 
   // ---------------------------------------------------------------- gateway RPC
+  // ---------------------------------------------------------------- diagnostics (D1 diag_log, 7 days)
+  private diagBudget = { at: 0, n: 0 };
+  /** Record an operator diagnostic. Rate-limited per instance so a noisy site can't flood D1. */
+  diag(level: 'info' | 'warn' | 'error', source: string, message: string, data?: Record<string, unknown>) {
+    const t = now();
+    if (t - this.diagBudget.at > 600_000) this.diagBudget = { at: t, n: 0 };
+    if (++this.diagBudget.n > 200) return;
+    this.ctx.waitUntil(this.env.DB.prepare('INSERT INTO diag_log (at, site_id, level, source, message, data) VALUES (?,?,?,?,?,?)')
+      .bind(t, this.siteId, level, source, message.slice(0, 1000), data ? JSON.stringify(data).slice(0, 4000) : null).run().catch(() => undefined));
+  }
+
   async gw<T = any>(op: string, args: Record<string, unknown> = {}, timeoutMs = 30_000): Promise<T> {
+    const started = now();
+    const target = (args.serial ?? args.url ?? args.target ?? null) as string | null;
+    return this.gwRaw<T>(op, args, timeoutMs).then(
+      (v) => { const ms = now() - started; if (ms > 5_000 && !SLOW_BY_DESIGN.has(op)) this.diag('warn', 'gw', `${op} took ${ms} ms`, { op, target, ms }); return v; },
+      (e) => { this.diag('warn', 'gw', `${op} failed after ${now() - started} ms: ${e?.message ?? e}`, { op, target, code: e?.code }); throw e; },
+    );
+  }
+
+  private gwRaw<T = any>(op: string, args: Record<string, unknown>, timeoutMs: number): Promise<T> {
     const ws = this.agent();
-    if (!ws) throw new HttpError(503, 'gateway_offline', 'The site gateway is offline');
+    if (!ws) return Promise.reject(new HttpError(503, 'gateway_offline', 'The site gateway is offline'));
     const id = `r${++this.seq}${Date.now().toString(36)}`;
     return new Promise<T>((resolve, reject) => {
       const timer = setTimeout(() => {
@@ -354,6 +377,7 @@ export class SiteHub extends DurableObject<Env> {
       }
       case 'log': {
         this.sql.exec('INSERT INTO gwlog (ts, level, msg) VALUES (?,?,?)', data.ts ?? now(), data.level ?? 'info', String(data.msg ?? '').slice(0, 2000));
+        if (/warn|error/i.test(String(data.level ?? ''))) this.diag(/error/i.test(String(data.level)) ? 'error' : 'warn', 'gateway', String(data.msg ?? '').slice(0, 1000));
         break;
       }
     }
@@ -852,9 +876,11 @@ export class SiteHub extends DurableObject<Env> {
     const session = new MirrorSession(deviceId, opts);
     this.mirrors.set(deviceId, session);
     this.mirrorStatus(deviceId, 'starting');
+    this.diag('info', 'mirror', `start ${deviceId}`, { device_id: deviceId, ...opts });
     try {
       await this.mirrorStart(session, actor);
     } catch (e: any) {
+      this.diag('error', 'mirror', `start failed after ${now() - session.started} ms: ${e?.message ?? e}`, { device_id: deviceId });
       this.mirrorStatus(deviceId, 'error', e?.message ?? String(e));
       this.mirrorStop(deviceId, 'start failed');
       for (const v of this.ctx.getWebSockets(`m:${deviceId}`)) { try { v.close(1011, 'mirroring failed'); } catch { /* */ } }
@@ -881,7 +907,10 @@ export class SiteHub extends DurableObject<Env> {
     await sh(serverCommand(m.scid, m.opts));
     const service = `localabstract:scrcpy_${m.scid}`;
     const parser = m.parser = new ScrcpyVideoParser(
-      (unit) => this.mirrorBroadcast(m.deviceId, unit),
+      (unit) => {
+        if (++m.units === 1) this.diag('info', 'mirror', `first video unit after ${now() - m.started} ms`, { device_id: m.deviceId, bytes: m.bytes });
+        this.mirrorBroadcast(m.deviceId, unit);
+      },
       (meta) => {
         const changed = !m.meta || m.meta.width !== meta.width || m.meta.height !== meta.height;
         m.meta = meta;
@@ -890,7 +919,12 @@ export class SiteHub extends DurableObject<Env> {
     );
     this.byteStreams.set(m.video, {
       onBytes: (b) => {
-        try { parser.push(b); } catch (e: any) { this.mirrorStatus(m.deviceId, 'error', e.message); this.mirrorStop(m.deviceId, 'parse error'); }
+        if (m.bytes === 0) this.diag('info', 'mirror', `first video bytes after ${now() - m.started} ms`, { device_id: m.deviceId, len: b.length, head: Array.from(b.subarray(0, 16)) });
+        m.bytes += b.length;
+        try { parser.push(b); } catch (e: any) {
+          this.diag('error', 'mirror', `parse error: ${e.message}`, { device_id: m.deviceId, bytes: m.bytes });
+          this.mirrorStatus(m.deviceId, 'error', e.message); this.mirrorStop(m.deviceId, 'parse error');
+        }
       },
       onClose: (reason) => { if (this.mirrors.get(m.deviceId) === m) { this.mirrorStatus(m.deviceId, 'ended', `Stream closed: ${reason}`); this.mirrorStop(m.deviceId, reason); } },
     });
@@ -904,6 +938,22 @@ export class SiteHub extends DurableObject<Env> {
     await this.gw('adb.stream', { stream: m.control, serial, service }, 8_000);
     m.state = 'streaming';
     this.mirrorStatus(m.deviceId, 'streaming');
+    this.diag('info', 'mirror', `streams connected after ${now() - m.started} ms`, { device_id: m.deviceId });
+    // Watchdog: a connected session that never delivers a picture should say so instead of spinning forever.
+    setTimeout(() => {
+      if (this.mirrors.get(m.deviceId) !== m || m.units > 0) return;
+      this.diag('warn', 'mirror', `no picture 8 s after connect (bytes ${m.bytes})`, { device_id: m.deviceId, bytes: m.bytes });
+      try { this.sendStreamBytes(m.control, RESET_VIDEO); } catch { /* */ }
+    }, 8_000);
+    setTimeout(() => {
+      if (this.mirrors.get(m.deviceId) !== m || m.units > 0) return;
+      this.diag('error', 'mirror', `gave up: no picture 20 s after connect (bytes ${m.bytes})`, { device_id: m.deviceId, bytes: m.bytes });
+      this.mirrorStatus(m.deviceId, 'error', m.bytes
+        ? 'The box started mirroring but its video couldn’t be read. Try again, or restart the box if it keeps happening.'
+        : 'The box connected but isn’t sending a picture. It may be asleep or busy: press Home on the remote (or wake it here) and try again.');
+      this.mirrorStop(m.deviceId, 'no picture');
+      for (const v of this.ctx.getWebSockets(`m:${m.deviceId}`)) { try { v.close(1011, 'no picture'); } catch { /* */ } }
+    }, 20_000);
     await audit(this.env, actor, 'device.mirror', { target_type: 'device', target_id: m.deviceId, site_id: this.siteId, details: m.opts });
   }
 
@@ -911,7 +961,13 @@ export class SiteHub extends DurableObject<Env> {
     const id = (ws.deserializeAttachment() as { device_id?: string } | null)?.device_id;
     if (!id) return;
     if (typeof message === 'string') {
-      try { if (JSON.parse(message).type === 'ping') ws.send(JSON.stringify({ type: 'pong' })); } catch { /* */ }
+      try {
+        const j = JSON.parse(message);
+        if (j.type === 'ping') ws.send(JSON.stringify({ type: 'pong' }));
+        else if (j.type === 'client' && typeof j.event === 'string') {
+          this.diag(j.event === 'first_frame' ? 'info' : 'warn', 'mirror-viewer', `${j.event.slice(0, 40)}${j.message ? `: ${String(j.message).slice(0, 300)}` : ''}`, { device_id: id, stats: j.stats ?? null });
+        }
+      } catch { /* */ }
       return;
     }
     const m = this.mirrors.get(id);
@@ -922,10 +978,11 @@ export class SiteHub extends DurableObject<Env> {
     try { this.sendStreamBytes(m.control, b); } catch { /* gateway gone; the video close will end the session */ }
   }
 
-  private mirrorStop(deviceId: string, _reason: string) {
+  private mirrorStop(deviceId: string, reason: string) {
     const m = this.mirrors.get(deviceId);
     if (!m) return;
     this.mirrors.delete(deviceId);
+    this.diag('info', 'mirror', `ended (${reason}) after ${Math.round((now() - m.started) / 1000)} s`, { device_id: deviceId, bytes: m.bytes, units: m.units, state: m.state });
     for (const id of [m.video, m.control]) {
       this.byteStreams.delete(id);
       try { this.sendFrame({ t: 'stream', stream: id, kind: 'close', code: 1000, reason: 'mirroring stopped' }); } catch { /* */ }
@@ -1368,6 +1425,9 @@ export function statusForCode(code: string): number {
 
 class MirrorSession {
   state: 'starting' | 'streaming' = 'starting';
+  readonly started = Date.now();
+  bytes = 0;
+  units = 0;
   meta: StreamMeta | null = null;
   parser!: ScrcpyVideoParser;
   readonly scid: string;

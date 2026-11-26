@@ -68,6 +68,15 @@ function Player({ device, onUseScreenshots }: { device: Device; onUseScreenshots
   });
 
   const send = useCallback((d: ArrayBuffer | string) => connRef.current?.send(d), []);
+  /** Tell the hub how playback is going (recorded in the operator diagnostics log). */
+  const report = (event: string, message: string | undefined) => {
+    const s = st.current;
+    try {
+      connRef.current?.send(JSON.stringify({ type: 'client', event, message, stats: { bytes: s.bytes, frames: s.frames, errors: s.errors, codec: s.codec, ua: navigator.userAgent.slice(0, 120) } }));
+    } catch {
+      /* ignore */
+    }
+  };
   const pressKey = (keycode: number) => {
     send(encodeKeycode(KEY_ACTION.DOWN, keycode));
     send(encodeKeycode(KEY_ACTION.UP, keycode));
@@ -99,13 +108,17 @@ function Player({ device, onUseScreenshots }: { device: Device; onUseScreenshots
           }
           c.getContext('2d')?.drawImage(frame, 0, 0);
           s.frames++;
-          if (s.frames === 1) setHasPicture(true);
+          if (s.frames === 1) {
+            setHasPicture(true);
+            report('first_frame', undefined);
+          }
         }
         frame.close();
       },
       error: (e) => {
         // Recover once by asking for a fresh keyframe; give up after repeated failures.
         s.errors++;
+        report('decoder_error', e.message);
         decoderRef.current = null;
         s.codec = null;
         s.needKey = true;
@@ -116,6 +129,7 @@ function Player({ device, onUseScreenshots }: { device: Device; onUseScreenshots
     try {
       dec.configure({ codec, optimizeForLatency: true });
     } catch (e) {
+      report('decoder_unsupported', `${codec}: ${(e as Error).message}`);
       setStatus({ state: 'error', message: `This browser can’t play ${codec} video (${(e as Error).message}).` });
       return;
     }
@@ -198,6 +212,7 @@ function Player({ device, onUseScreenshots }: { device: Device; onUseScreenshots
     });
     connRef.current = conn;
     const ping = setInterval(() => conn.send(JSON.stringify({ type: 'ping' })), 20_000);
+    const noPicture = setTimeout(() => { if (!s.frames) report('no_picture_10s', undefined); }, 10_000);
     let lastFrames = 0;
     let lastBytes = 0;
     const meter = setInterval(() => {
@@ -208,6 +223,7 @@ function Player({ device, onUseScreenshots }: { device: Device; onUseScreenshots
     return () => {
       ours = true;
       clearInterval(ping);
+      clearTimeout(noPicture);
       clearInterval(meter);
       conn.close();
       connRef.current = null;

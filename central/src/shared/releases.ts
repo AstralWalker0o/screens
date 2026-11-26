@@ -17,6 +17,17 @@ export interface Release {
 
 export const RELEASES: Release[] = [
   {
+    version: '0.5.1',
+    date: '2026-11-26',
+    title: 'Live view that tells you what went wrong',
+    summary: 'A live view that connects but gets no picture now says so, and Screens keeps a diagnostic trail for troubleshooting.',
+    components: { gateway: '0.3.0', launcher: '1.0.0' },
+    notes: [
+      { kind: 'fixed', text: 'If a box connects but sends no picture, the live view asks it for a fresh picture, then explains what to try after 20 seconds instead of showing "Starting…" forever.' },
+      { kind: 'improved', text: 'Screens now records slow or failed gateway calls, gateway warnings and each step of a live view (kept for 7 days), so problems at a site can be traced without asking you to repeat them.' },
+    ],
+  },
+  {
     version: '0.5.0',
     date: '2026-11-26',
     title: 'Sonos, properly',
