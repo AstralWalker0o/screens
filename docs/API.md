@@ -86,6 +86,13 @@ Which commands are available depends on `Device.capabilities`.
 | `screenshot` | – | android → `{url}` |
 | `shell` | `{cmd}` | android → `{stdout, exit_code}` |
 | `private_dns` | `{enabled: bool}` | android (checked, and reverted automatically if it fails) |
+| `adb_pair` | `{code, port}` | android 11+ Wireless debugging: pairing code + pairing port shown on the TV |
+| `revoke_permission` / `grant_permission` | `{package, permission: microphone\|camera\|location\|contacts}` | android |
+| `debloat` | `{packages?}` (defaults to catalogue bloat) | android: disables, never uninstalls |
+| `input` | `{source: TV\|HDMI1–4\|SOURCE}` | samsung |
+| `favorites` / `play_favorite` | `{}` / `{uri, meta}` | sonos |
+| `eq` | `{bass?, treble?, loudness?, night_mode?, speech?}` | sonos (night/speech: soundbars) |
+| `sleep_timer` | `{minutes}` (0 clears) | sonos |
 | `media` | `{action: play\|pause\|next\|prev\|stop}` | sonos, android |
 | `group` | `{coordinator_id}` / `ungroup` | sonos |
 | `led` | `{on: bool}` | sonos |

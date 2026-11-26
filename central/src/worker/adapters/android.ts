@@ -270,6 +270,16 @@ export const android: Adapter = {
         await sh(ctx, `cmd notification post -S bigtext -t Screens screens ${shellQuote(msg)}`);
         return { ok: true };
       }
+      case 'adb_pair': {
+        // Android 11+ "Wireless debugging": Developer options → Wireless debugging → Pair device with pairing code.
+        const code = String(args.code ?? '');
+        const port = Number(args.port);
+        if (!/^\d{6}$/.test(code) || !(port > 0 && port < 65536)) throw new AdapterError('bad_args', 'Enter the 6-digit pairing code and the pairing port shown on the TV');
+        const r = await ctx.gw<{ ok: boolean; output: string }>('adb.pair', { host: ctx.device.ip, port, code }, 30_000);
+        if (!r.ok) return { ok: false, detail: `Pairing failed: ${String(r.output ?? '').slice(-200)}` };
+        if (args.connect_port && Number(args.connect_port) > 0) await ctx.update({ facts: { adb_tls: true } });
+        return { ok: true, detail: 'Paired. Screens will now connect using the wireless debugging port.' };
+      }
       case 'private_dns': return setPrivateDns(ctx, !!args.enabled, String(args.hostname ?? ''));
       case 'revoke_permission':
       case 'grant_permission': {

@@ -472,7 +472,11 @@ export class SiteHub extends DurableObject<Env> {
     const hosts = new Map<string, RawHost>();
     const get = (ip: string) => { let h = hosts.get(ip); if (!h) { h = { ip, ports: [], mdns: [], ssdp: [] }; hosts.set(ip, h); } return h; };
     if (scan.status === 'fulfilled') for (const h of scan.value.hosts ?? []) { const x = get(h.ip); x.ports = h.open_ports ?? []; x.mac = h.mac ?? x.mac; }
-    if (mdns.status === 'fulfilled') for (const e of mdns.value.entries ?? []) for (const ip of (e.addrs ?? []).filter((a: string) => a.includes('.'))) get(ip).mdns.push({ service: e.service, instance: e.instance, txt: e.txt });
+    const adbTlsPort = new Map<string, number>();
+    if (mdns.status === 'fulfilled') for (const e of mdns.value.entries ?? []) for (const ip of (e.addrs ?? []).filter((a: string) => a.includes('.'))) {
+      get(ip).mdns.push({ service: e.service, instance: e.instance, txt: e.txt });
+      if (e.service === '_adb-tls-connect._tcp' && e.port) adbTlsPort.set(ip, e.port);
+    }
     if (ssdp.status === 'fulfilled') for (const e of ssdp.value.entries ?? []) get(e.ip).ssdp.push({ server: e.server, st: e.st, location: e.location, usn: e.usn });
     if (neigh.status === 'fulfilled') for (const e of neigh.value.entries ?? []) if (hosts.has(e.ip)) hosts.get(e.ip)!.mac ??= e.mac;
     if (scan.status === 'rejected' && mdns.status === 'rejected') throw scan.reason;
@@ -501,7 +505,7 @@ export class SiteHub extends DurableObject<Env> {
         }
       } catch { /* keep the first-pass guess */ }
       const adopted = devices.find((d) => d.ip === h.ip || (h.mac && normMac(d.mac) === normMac(h.mac)));
-      const hints = { ports: h.ports, mdns: [...new Set(h.mdns.map((m) => m.service))], ssdp: [...new Set(h.ssdp.map((s) => s.server).filter(Boolean))] as string[] };
+      const hints = { ports: h.ports, mdns: [...new Set(h.mdns.map((m) => m.service))], ssdp: [...new Set(h.ssdp.map((s) => s.server).filter(Boolean))] as string[], ...(adbTlsPort.has(h.ip) ? { adb_port: adbTlsPort.get(h.ip) } : {}) };
       await this.env.DB.prepare(`INSERT INTO discovered (site_id, ip, mac, kind_guess, name, model, manufacturer, hints, first_seen, last_seen) VALUES (?,?,?,?,?,?,?,?,?,?)
         ON CONFLICT(site_id, ip) DO UPDATE SET mac = COALESCE(excluded.mac, mac), kind_guess = excluded.kind_guess, name = COALESCE(excluded.name, name), model = COALESCE(excluded.model, model),
         manufacturer = COALESCE(excluded.manufacturer, manufacturer), hints = excluded.hints, last_seen = excluded.last_seen`)
@@ -520,7 +524,7 @@ export class SiteHub extends DurableObject<Env> {
     const t = now();
     await this.env.DB.prepare(`INSERT INTO devices (id, site_id, kind, name, room, ip, mac, port, manufacturer, model, status, dns_mode, dns_policy, monitor_until, created_at, updated_at)
       VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`)
-      .bind(id, this.siteId, input.kind, input.name, input.room ?? null, input.ip, normMac(disc?.mac), input.port ?? (input.kind === 'android' ? 5555 : null),
+      .bind(id, this.siteId, input.kind, input.name, input.room ?? null, input.ip, normMac(disc?.mac), input.port ?? (input.kind === 'android' ? (parseJson<any>(disc?.hints, {}).adb_port ?? 5555) : null),
         disc?.manufacturer ?? null, disc?.model ?? null, 'pairing', 'monitor', settings.default_policy === 'strict' ? 'strict' : 'balanced', t + settings.monitor_days * 86_400_000, t, t).run();
     await audit(this.env, actor, 'device.adopt', { target_type: 'device', target_id: id, site_id: this.siteId, details: input });
     this.names = null;
