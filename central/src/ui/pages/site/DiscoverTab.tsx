@@ -4,6 +4,7 @@ import { Radar, Plus, EyeOff, CircleHelp, ChevronDown, Router, TvMinimalPlay, Tv
 import type { Discovered, DeviceKind, SiteDetail } from '../../../shared/types';
 import { api } from '../../api';
 import { act, invalidate, setQueryData, useQuery } from '../../lib/query';
+import { toast } from '../../lib/toast';
 import { KIND, MDNS_SERVICE_NAMES } from '../../lib/labels';
 import { Badge, Button, ButtonLink, Callout, Card, CardBody, CardHeader, EmptyState, RelTime, SkeletonRows, cn } from '../../components/ui';
 import { Dialog } from '../../components/overlay';
@@ -28,7 +29,7 @@ export function DiscoverTab({ site }: { site: SiteDetail }) {
     if (r) {
       setQueryData(key, () => r);
       const fresh = r.filter((d) => !d.adopted_device_id && !d.ignored).length;
-      if (fresh) act(async () => fresh, { success: `Found ${fresh} device${fresh === 1 ? '' : 's'} you can adopt` });
+      toast.success(fresh ? `Found ${fresh} device${fresh === 1 ? '' : 's'} you can adopt` : 'Scan finished — nothing new found');
     }
   };
   const ignore = async (d: Discovered) => {
