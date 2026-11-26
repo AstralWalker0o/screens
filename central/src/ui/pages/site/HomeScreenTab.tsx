@@ -188,7 +188,7 @@ export default function HomeScreenTab({ site }: { site: SiteDetail }) {
         <div className="min-w-0 xl:sticky xl:top-[4.5rem] xl:self-start">
           <TvPreview
             home={draft.home}
-            accent={draft.accent ?? welcomeAccent}
+            accent={draft.accent && accentOk ? draft.accent : welcomeAccent}
             inventory={inventory}
             kiosk={kiosk}
             activeRowId={activeRow}
