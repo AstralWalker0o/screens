@@ -204,6 +204,7 @@ const JOB_LABELS: Record<string, string> = {
   launcher_install: 'Installed Screens Launcher', launcher_config: 'Updated launcher settings', launcher_remove: 'Removed Screens Launcher',
   launcher_status: 'Checked launcher', welcome_show: 'Showed welcome screen', debloat: 'Removed bloatware', revoke_permission: 'Revoked an app permission',
   grant_permission: 'Granted an app permission', apps: 'Refreshed app list',
+  adb_pair: 'Paired with code', input: 'Changed TV input', eq: 'Changed sound settings', sleep_timer: 'Set sleep timer', play_favorite: 'Played a Sonos favourite',
 };
 export function jobLabel(kind: string, params?: Record<string, unknown> | null): string {
   if (kind === 'automation') return params?.automation ? `Automation “${String(params.automation)}”` : 'Automation';

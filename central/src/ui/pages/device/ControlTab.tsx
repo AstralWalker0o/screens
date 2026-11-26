@@ -1,4 +1,4 @@
-import { Gamepad2, MonitorSmartphone, LayoutGrid, Info, MessageSquare } from 'lucide-react';
+import { Gamepad2, MonitorSmartphone, LayoutGrid, Info, MessageSquare, HdmiPort, Tv, Cable } from 'lucide-react';
 import { useState } from 'react';
 import type { Device } from '../../../shared/types';
 import { sendCommand } from '../../lib/commands';
@@ -42,13 +42,14 @@ export function ControlTab({ device: d }: { device: Device }) {
             <Callout kind="info" title={`What you can do with a ${d.kind === 'lg' ? 'LG' : 'Samsung'} TV`}>
               {d.kind === 'samsung' ? (
                 <>
-                  Samsung TVs let other devices press remote buttons, type text and open apps — that’s all. They don’t allow screenshots, installing or removing apps, or changing DNS settings over the network,
+                  Samsung TVs let other devices press remote buttons, switch inputs, type text and open apps — that’s all. They don’t allow screenshots, installing or removing apps, or changing DNS settings over the network,
                   so those controls aren’t shown. To wake the TV from standby it needs <em>Power On with Mobile</em> turned on (see the Privacy checklist).
                 </>
               ) : (
                 <>LG TVs let other devices press remote buttons, type text, open apps and show messages on screen. Screenshots and app installs aren’t possible over the network.</>
               )}
             </Callout>
+            {d.kind === 'samsung' && d.capabilities.includes('remote') && <InputPicker device={d} />}
             {d.capabilities.includes('toast') && (
               <Card>
                 <CardHeader title="Show a message on the TV" icon={MessageSquare} />
@@ -66,6 +67,50 @@ export function ControlTab({ device: d }: { device: Device }) {
         )}
       </div>
     </div>
+  );
+}
+
+const SOURCES: { id: string; label: string; icon: typeof Tv }[] = [
+  { id: 'TV', label: 'TV', icon: Tv },
+  { id: 'HDMI1', label: 'HDMI 1', icon: HdmiPort },
+  { id: 'HDMI2', label: 'HDMI 2', icon: HdmiPort },
+  { id: 'HDMI3', label: 'HDMI 3', icon: HdmiPort },
+  { id: 'HDMI4', label: 'HDMI 4', icon: HdmiPort },
+];
+
+/** Samsung input switching (TV tuner or an HDMI port). */
+function InputPicker({ device }: { device: Device }) {
+  const [busy, setBusy] = useState<string | null>(null);
+  const [last, setLast] = useState<string | null>(null);
+  const pick = async (source: string, label: string) => {
+    setBusy(source);
+    const r = await sendCommand(device.id, 'input', { source }, { success: source === 'SOURCE' ? 'Source menu opened on the TV' : `Switched to ${label}`, error: 'Couldn’t change the input' });
+    setBusy(null);
+    if (r && source !== 'SOURCE') setLast(source);
+  };
+  return (
+    <Card>
+      <CardHeader title="Input" icon={Cable} subtitle="Switch between the TV tuner and the HDMI ports (game console, set-top box…)." />
+      <CardBody>
+        <div className="flex flex-wrap gap-2" role="group" aria-label="TV input">
+          {SOURCES.map((src) => (
+            <Button
+              key={src.id}
+              icon={src.icon}
+              loading={busy === src.id}
+              disabled={device.status !== 'online' || (busy !== null && busy !== src.id)}
+              variant={last === src.id ? 'soft' : 'secondary'}
+              aria-pressed={last === src.id}
+              onClick={() => pick(src.id, src.label)}
+            >
+              {src.label}
+            </Button>
+          ))}
+          <Button variant="ghost" loading={busy === 'SOURCE'} disabled={device.status !== 'online' || (busy !== null && busy !== 'SOURCE')} onClick={() => pick('SOURCE', 'Source menu')}>Source menu…</Button>
+        </div>
+        <p className="mt-2 text-xs text-muted">The TV doesn’t report which input is active, so the highlighted one is just the last one you picked here.</p>
+      </CardBody>
+    </Card>
   );
 }
 

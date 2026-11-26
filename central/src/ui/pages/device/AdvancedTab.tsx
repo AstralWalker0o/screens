@@ -1,6 +1,6 @@
 import { useEffect, useRef, useState, type KeyboardEvent } from 'react';
 import { useNavigate } from 'react-router';
-import { SquareTerminal, Save, Info, Link2, RefreshCw, RotateCw, Trash2, Eraser, Wrench, House } from 'lucide-react';
+import { SquareTerminal, Save, Info, Link2, RefreshCw, RotateCw, Trash2, Eraser, Wrench, House, KeyRound } from 'lucide-react';
 import { LauncherActions, LauncherStatusText } from '../../components/Launcher';
 import type { Device } from '../../../shared/types';
 import { api } from '../../api';
@@ -29,6 +29,7 @@ export function AdvancedTab({ device: d }: { device: Device }) {
             </CardBody>
           </Card>
         )}
+        {d.kind === 'android' && <PairWithCode device={d} />}
         <ActionsCard device={d} />
         <Card>
           <CardHeader title="About this device" icon={Info} />
@@ -271,6 +272,48 @@ function ActionsCard({ device: d }: { device: Device }) {
       >
         <p>Its history, privacy report and settings are deleted. You can adopt it again later from Discover.</p>
       </ConfirmDialog>
+    </Card>
+  );
+}
+
+/** Android 11+ / Google TV "Wireless debugging" pairing with a 6-digit code. */
+function PairWithCode({ device }: { device: Device }) {
+  const [code, setCode] = useState('');
+  const [port, setPort] = useState('');
+  const [busy, setBusy] = useState(false);
+  const [result, setResult] = useState<string | null>(null);
+  const valid = /^\d{6}$/.test(code) && Number(port) > 0 && Number(port) < 65536;
+  const submit = async () => {
+    setBusy(true);
+    setResult(null);
+    const r = await sendCommand(device.id, 'adb_pair', { code, port: Number(port) }, { error: 'Pairing didn’t work', invalidate: [`device:${device.id}`, 'devices'] });
+    setBusy(false);
+    if (r) {
+      setResult(((r.data as { detail?: string } | undefined)?.detail) ?? 'Paired.');
+      setCode('');
+      setPort('');
+    }
+  };
+  return (
+    <Card>
+      <CardHeader title="Pair with code (Wireless debugging)" icon={KeyRound} />
+      <CardBody>
+        <p className="text-sm text-muted">
+          On newer Google TV / Android 11+ boxes: Developer options → Wireless debugging → <em>Pair device with pairing code</em>. Enter the code and the port the TV shows.
+          NVIDIA Shields use plain Network debugging and don’t need this.
+        </p>
+        <form className="mt-3 grid gap-3 sm:grid-cols-[1fr_120px_auto] sm:items-end" onSubmit={(e) => { e.preventDefault(); if (valid) void submit(); }}>
+          <Field label="Pairing code" htmlFor="pair-code">
+            <Input id="pair-code" mono inputMode="numeric" autoComplete="one-time-code" placeholder="123456" value={code} onChange={(e) => setCode(e.target.value.replace(/\D/g, '').slice(0, 6))} />
+          </Field>
+          <Field label="Port" htmlFor="pair-port">
+            <Input id="pair-port" mono inputMode="numeric" placeholder="37123" value={port} onChange={(e) => setPort(e.target.value.replace(/\D/g, '').slice(0, 5))} />
+          </Field>
+          <Button type="submit" variant="primary" icon={Link2} loading={busy} disabled={!valid || device.status === 'offline'}>Pair</Button>
+        </form>
+        <p className="mt-2 text-xs text-muted">The port here is the pairing port from the pop-up — it’s different from the one shown on the Wireless debugging screen itself.</p>
+        {result && <p className="mt-2 text-sm text-ok-fg" role="status">{result}</p>}
+      </CardBody>
     </Card>
   );
 }

@@ -122,7 +122,7 @@ export const sites: Omit<SiteDetail, 'devices' | 'gateway' | 'gateway_status' | 
 const ANDROID_CAPS: DeviceCapability[] = ['remote', 'text', 'apps', 'launch', 'install', 'uninstall', 'disable', 'clear', 'screenshot', 'tap', 'shell', 'reboot', 'power', 'volume', 'private_dns', 'media', 'toast', 'guest_reset', 'launcher'];
 const SAMSUNG_CAPS: DeviceCapability[] = ['remote', 'text', 'apps', 'launch', 'power', 'volume', 'guest_reset'];
 const LG_CAPS: DeviceCapability[] = ['remote', 'text', 'apps', 'launch', 'power', 'volume', 'toast'];
-const SONOS_CAPS: DeviceCapability[] = ['volume', 'media', 'group'];
+const SONOS_CAPS: DeviceCapability[] = ['volume', 'mute', 'media', 'group', 'led', 'eq', 'favorites'];
 
 type DevSeed = Omit<Device, 'dns_allow' | 'dns_block' | 'tags' | 'facts' | 'created_at' | 'updated_at' | 'capabilities'> &
   Partial<Pick<Device, 'dns_allow' | 'dns_block' | 'tags' | 'facts' | 'capabilities' | 'created_at' | 'updated_at'>>;
@@ -161,7 +161,8 @@ export const devices: Device[] = [
     dns_mode: 'enforce', dns_policy: 'balanced', privacy_score: 88,
     facts: {
       uuid: 'RINCON_48A6B872103C01400', room: 'Living Room', model_number: 'S19', display_version: '17.2', led: true,
-      now_playing: { state: 'PLAYING', title: 'Midnight City', artist: 'M83', album: 'Hurry Up, We’re Dreaming', volume: 28, muted: false, source: 'Spotify', duration_s: 243, position_s: 87 },
+      now_playing: { state: 'PLAYING', title: 'Midnight City', artist: 'M83', album: 'Hurry Up, We’re Dreaming', volume: 28, muted: false },
+      position: { elapsed_s: 87, duration_s: 243 }, eq: { bass: 2, treble: 0, loudness: true, night_mode: false, speech: true },
       group: { coordinator: 'RINCON_48A6B872103C01400', is_coordinator: true, members: [{ uuid: 'RINCON_48A6B872103C01400', name: 'Living Room', ip: '10.0.20.60' }, { uuid: 'RINCON_48A6B89C44D101400', name: 'Kitchen', ip: '10.0.20.61' }] },
     },
   }),
@@ -171,7 +172,8 @@ export const devices: Device[] = [
     dns_mode: 'enforce', dns_policy: 'balanced', privacy_score: 92,
     facts: {
       uuid: 'RINCON_48A6B89C44D101400', room: 'Kitchen', model_number: 'S39', display_version: '17.2', led: false,
-      now_playing: { state: 'PLAYING', title: 'Midnight City', artist: 'M83', album: 'Hurry Up, We’re Dreaming', volume: 22, muted: false, source: 'Spotify', duration_s: 243, position_s: 87 },
+      now_playing: { state: 'PLAYING', title: 'Midnight City', artist: 'M83', album: 'Hurry Up, We’re Dreaming', volume: 22, muted: false },
+      position: { elapsed_s: 87, duration_s: 243 },
       group: { coordinator: 'RINCON_48A6B872103C01400', is_coordinator: false, members: [{ uuid: 'RINCON_48A6B872103C01400', name: 'Living Room', ip: '10.0.20.60' }, { uuid: 'RINCON_48A6B89C44D101400', name: 'Kitchen', ip: '10.0.20.61' }] },
     },
   }),

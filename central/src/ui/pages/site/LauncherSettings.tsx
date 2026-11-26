@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useState } from 'react';
 import { PartyPopper, Wifi, Plus, Trash2, ArrowUp, ArrowDown, Save, Undo2, LayoutGrid, Lock, Pin, PinOff, House, TvMinimalPlay } from 'lucide-react';
-import type { DeviceApp, KioskConfig, SiteDetail, WelcomeConfig } from '../../../shared/types';
+import type { KioskConfig, SiteDetail, WelcomeConfig } from '../../../shared/types';
 import { api } from '../../api';
 import { act, setQueryData, useQuery } from '../../lib/query';
 import { useElementWidth } from '../../lib/hooks';
@@ -12,14 +12,14 @@ import { KindIcon, DeviceStatusBadge } from '../../components/status';
 
 const MAX_SECTIONS = 8;
 
-/** Union of apps seen on the site's Android devices: user apps first, then system apps. */
+/** Apps seen on the site's Android devices (GET /api/sites/:id/apps): user apps first, then system apps. */
 export function useSiteApps(site: SiteDetail) {
-  const androids = site.devices.filter((d) => d.kind === 'android');
-  return useQuery(androids.length ? `site-apps:${site.id}` : null, async () => {
-    const lists = await Promise.all(androids.map((d) => api.devices.apps(d.id).catch(() => [] as DeviceApp[])));
-    const m = new Map<string, DeviceApp>();
-    for (const l of lists) for (const a of l) if (!m.has(a.package)) m.set(a.package, a);
-    return [...m.values()].sort((a, b) => Number(a.system) - Number(b.system) || (a.label ?? a.package).localeCompare(b.label ?? b.package));
+  const hasAndroid = site.devices.some((d) => d.kind === 'android');
+  return useQuery(hasAndroid ? `site-apps:${site.id}` : null, async () => {
+    const list = await api.sites.apps(site.id);
+    return list
+      .filter((a) => a.kinds.includes('android'))
+      .sort((a, b) => Number(a.system) - Number(b.system) || (a.label ?? a.package).localeCompare(b.label ?? b.package));
   });
 }
 
@@ -357,7 +357,7 @@ export function KioskCard({ site }: { site: SiteDetail }) {
                   {k.pinned.map((p, i) => (
                     <li key={p} className="flex items-center gap-2 rounded-lg border border-line bg-surface px-2 py-1.5">
                       <span className="w-5 text-center text-xs text-subtle tnum">{i + 1}</span>
-                      <AppIcon app={{ label: label(p), package: p, icon: byPkg.get(p)?.icon }} size="sm" />
+                      <AppIcon app={{ label: label(p), package: p }} size="sm" />
                       <span className="min-w-0 flex-1 truncate text-sm text-fg">{label(p)}</span>
                       <IconButton icon={ArrowUp} label={`Move ${label(p)} up`} size="sm" disabled={i === 0} onClick={() => movePinned(i, -1)} />
                       <IconButton icon={ArrowDown} label={`Move ${label(p)} down`} size="sm" disabled={i === k.pinned.length - 1} onClick={() => movePinned(i, 1)} />

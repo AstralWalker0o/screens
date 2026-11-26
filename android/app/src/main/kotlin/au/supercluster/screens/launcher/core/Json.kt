@@ -70,7 +70,8 @@ object Json {
                 '\t' -> sb.append("\\t")
                 '\b' -> sb.append("\\b")
                 '\u000C' -> sb.append("\\f")
-                else -> if (c < ' ' || c == ' ' || c == ' ') {
+                // U+2028/U+2029 are escaped too: they break some JavaScript-based JSON consumers.
+                else -> if (c < ' ' || c.code == 0x2028 || c.code == 0x2029) {
                     sb.append("\\u").append(String.format("%04x", c.code))
                 } else {
                     sb.append(c)

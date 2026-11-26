@@ -1,14 +1,15 @@
 import { useMemo, useState } from 'react';
 import { Link } from 'react-router';
-import { AppWindow, Play, Ellipsis, Square, Eraser, Ban, CircleCheck, Trash2, Store, RefreshCw, Download, Mic, Camera, MapPin, Package } from 'lucide-react';
+import { AppWindow, Play, Ellipsis, Square, Eraser, Ban, CircleCheck, Trash2, Store, RefreshCw, Download, Mic, Camera, MapPin, Package, PackageMinus, MicOff, CameraOff, MapPinOff, ContactRound, UserX, CircleX, CircleDashed } from 'lucide-react';
 import type { Device, DeviceApp } from '../../../shared/types';
 import { api } from '../../api';
 import { sendCommand } from '../../lib/commands';
-import { setQueryData, useQuery } from '../../lib/query';
+import { errorMessage, invalidate, setQueryData, useQuery } from '../../lib/query';
+import { toast } from '../../lib/toast';
 import { fmtBytes } from '../../lib/format';
-import { PERMISSION_LABELS } from '../../lib/labels';
+import { PRIVACY_PERMISSION } from '../../lib/labels';
 import { AppIcon } from '../../components/AppLauncher';
-import { Badge, Button, ButtonLink, Callout, Card, EmptyState, IconButton, SkeletonRows } from '../../components/ui';
+import { Badge, Button, ButtonLink, Callout, Card, EmptyState, IconButton, SkeletonRows, StatusText, cn } from '../../components/ui';
 import { Checkbox, Field, Input, SearchInput, Segmented } from '../../components/forms';
 import { ConfirmDialog, Dialog, Menu } from '../../components/overlay';
 
@@ -24,6 +25,8 @@ export function AppsTab({ device: d }: { device: Device }) {
   const [storeOpen, setStoreOpen] = useState(false);
   const [confirm, setConfirm] = useState<{ kind: 'clear' | 'uninstall'; app: DeviceApp } | null>(null);
   const [keepData, setKeepData] = useState(false);
+  const [blocked, setBlocked] = useState<Record<string, boolean>>({});
+  const [debloat, setDebloat] = useState<'confirm' | 'running' | DebloatResult | null>(null);
   const android = d.kind === 'android';
 
   const apps = useMemo(() => {
@@ -46,6 +49,32 @@ export function AppsTab({ device: d }: { device: Device }) {
     if (r && (command === 'disable' || command === 'enable')) setQueryData<DeviceApp[]>(key, (old) => old?.map((x) => (x.package === app.package ? { ...x, enabled: command === 'enable' } : x)));
     if (r && command === 'uninstall') setQueryData<DeviceApp[]>(key, (old) => old?.filter((x) => x.package !== app.package));
     return r;
+  };
+
+  const setPermission = async (app: DeviceApp, perm: PermKey, block: boolean) => {
+    const r = await sendCommand(d.id, block ? 'revoke_permission' : 'grant_permission', { package: app.package, permission: perm }, {
+      success: block ? `${app.label ?? app.package} can no longer use the ${perm}` : `${app.label ?? app.package} can use the ${perm} again`,
+      error: block ? `Couldn’t block the ${perm}` : `Couldn’t allow the ${perm}`,
+      invalidate: [key, `privacy:${d.id}`],
+    });
+    if (r) setBlocked((b) => ({ ...b, [`${app.package}|${perm}`]: block }));
+  };
+
+  const runDebloat = async () => {
+    setDebloat('running');
+    try {
+      // A partial failure comes back as ok:false with the lists in data, so read data either way.
+      const r = await api.devices.command(d.id, 'debloat');
+      const res = (r.data ?? {}) as Partial<DebloatResult>;
+      const out: DebloatResult = { disabled: res.disabled ?? [], failed: res.failed ?? [], skipped: res.skipped ?? [] };
+      if (!r.ok && !out.failed.length && r.error) throw new Error(r.error);
+      setDebloat(out);
+      setQueryData<DeviceApp[]>(key, (old) => old?.map((x) => (out.disabled.includes(x.package) ? { ...x, enabled: false } : x)));
+      invalidate(key, `privacy:${d.id}`);
+    } catch (e) {
+      toast.error('Debloat failed', errorMessage(e));
+      setDebloat(null);
+    }
   };
 
   return (
@@ -72,6 +101,7 @@ export function AppsTab({ device: d }: { device: Device }) {
           <Button size="sm" icon={RefreshCw} loading={refreshing} onClick={refresh} disabled={d.status === 'offline'}>Refresh app list</Button>
           {android && d.capabilities.includes('install') && (
             <>
+              <Button size="sm" icon={PackageMinus} onClick={() => setDebloat('confirm')} disabled={d.status === 'offline' || !d.capabilities.includes('disable')} title="Turn off pre-installed apps known for ads and tracking">Debloat</Button>
               <Button size="sm" icon={Store} onClick={() => setStoreOpen(true)} disabled={d.status === 'offline'}>Open in Play Store</Button>
               <Button size="sm" variant="primary" icon={Download} onClick={() => setInstallOpen(true)} disabled={d.status === 'offline'}>Install from library</Button>
             </>
@@ -102,6 +132,8 @@ export function AppsTab({ device: d }: { device: Device }) {
                   setKeepData(false);
                   setConfirm({ kind: 'uninstall', app: a });
                 }}
+                blocked={blocked}
+                onPermission={(perm, block) => setPermission(a, perm, block)}
               />
             ))}
           </ul>
@@ -133,17 +165,44 @@ export function AppsTab({ device: d }: { device: Device }) {
       >
         <p>{confirm?.app.label} will be removed from {d.name}. You can reinstall it from the Play Store or your library.</p>
       </ConfirmDialog>
+      <ConfirmDialog
+        open={debloat === 'confirm' || debloat === 'running'}
+        onClose={() => setDebloat((cur) => (cur === 'confirm' ? null : cur))}
+        title={`Debloat ${d.name}?`}
+        confirmLabel="Turn them off"
+        busy={debloat === 'running'}
+        onConfirm={runDebloat}
+      >
+        <p>Screens turns off pre-installed apps that are known for ads, tracking or telemetry (from its app catalogue), such as recommendation feeds and vendor feedback tools.</p>
+        <p>Nothing is uninstalled. Any of them can be turned back on from this list with <strong className="text-fg">Enable</strong>.</p>
+      </ConfirmDialog>
+      <Dialog
+        open={!!debloat && typeof debloat === 'object'}
+        onClose={() => setDebloat(null)}
+        title="Debloat finished"
+        description={debloat && typeof debloat === 'object' ? `${debloat.disabled.length} turned off · ${debloat.failed.length} failed · ${debloat.skipped.length} not installed or already off` : undefined}
+        footer={<Button variant="primary" onClick={() => setDebloat(null)}>Done</Button>}
+      >
+        {debloat && typeof debloat === 'object' && (
+          <div className="space-y-4">
+            <DebloatList title="Turned off" tone="ok" icon={CircleCheck} items={debloat.disabled} labelOf={(p) => q.data?.find((x) => x.package === p)?.label} empty="Nothing needed turning off." />
+            {debloat.failed.length > 0 && <DebloatList title="Couldn’t turn off" tone="crit" icon={CircleX} items={debloat.failed} labelOf={(p) => q.data?.find((x) => x.package === p)?.label} />}
+            {debloat.skipped.length > 0 && <DebloatList title="Not installed or already off" tone="neutral" icon={CircleDashed} items={debloat.skipped} labelOf={(p) => q.data?.find((x) => x.package === p)?.label} />}
+          </div>
+        )}
+      </Dialog>
       <InstallDialog device={d} open={installOpen} onClose={() => setInstallOpen(false)} />
       <PlayStoreDialog device={d} open={storeOpen} onClose={() => setStoreOpen(false)} />
     </div>
   );
 }
 
-function AppRow({ app: a, device: d, onLaunch, onStop, onToggle, onStore, onClear, onUninstall }: {
+function AppRow({ app: a, device: d, onLaunch, onStop, onToggle, onStore, onClear, onUninstall, blocked, onPermission }: {
   app: DeviceApp; device: Device; onLaunch: () => void; onStop: () => void; onToggle: () => void; onStore: () => void; onClear: () => void; onUninstall: () => void;
+  blocked: Record<string, boolean>; onPermission: (perm: PermKey, block: boolean) => Promise<void>;
 }) {
   const android = d.kind === 'android';
-  const sensitive = a.permissions.filter((p) => PERMISSION_LABELS[p]);
+  const sensitive = Array.from(new Set(a.permissions.map((p) => PRIVACY_PERMISSION[p]?.key).filter(Boolean))) as PermKey[];
   const running = d.current_app === a.label;
   return (
     <li className="flex flex-wrap items-center gap-3 px-4 py-3 sm:flex-nowrap">
@@ -157,16 +216,18 @@ function AppRow({ app: a, device: d, onLaunch, onStop, onToggle, onStore, onClea
           {a.risk === 'high' && <Badge tone="crit" title="Known for heavy tracking or ads">High risk</Badge>}
           {a.risk === 'medium' && <Badge tone="warn" title="Some tracking or data collection">Medium risk</Badge>}
           {a.category && <Badge>{a.category}</Badge>}
-          {sensitive.map((p) => (
-            <Badge key={p} tone="serious" icon={p.endsWith('RECORD_AUDIO') ? Mic : p.endsWith('CAMERA') ? Camera : MapPin} title={`Can use the ${PERMISSION_LABELS[p].toLowerCase()}`}>
-              {PERMISSION_LABELS[p]}
-            </Badge>
-          ))}
         </p>
         <p className="mt-0.5 truncate font-mono text-[11.5px] text-muted">
           {a.package}
           {a.version_name ? ` · v${a.version_name}` : ''}
         </p>
+        {sensitive.length > 0 && (
+          <div className="mt-1.5 flex flex-wrap items-center gap-1.5">
+            {sensitive.map((perm) => (
+              <PermissionControl key={perm} perm={perm} app={a} blocked={!!blocked[`${a.package}|${perm}`]} canChange={android && d.status !== 'offline'} onChange={(b) => onPermission(perm, b)} />
+            ))}
+          </div>
+        )}
       </div>
       <div className="flex shrink-0 items-center gap-1.5 max-sm:w-full max-sm:justify-end">
         <Button size="sm" icon={Play} onClick={onLaunch} disabled={!a.enabled || d.status === 'offline' || !d.capabilities.includes('launch')}>Open</Button>
@@ -268,5 +329,72 @@ function PlayStoreDialog({ device, open, onClose }: { device: Device; open: bool
         <Input id="ps-pkg" mono value={pkg} onChange={(e) => setPkg(e.target.value)} placeholder="com.example.app" autoFocus />
       </Field>
     </Dialog>
+  );
+}
+
+type PermKey = 'microphone' | 'camera' | 'location' | 'contacts';
+interface DebloatResult { disabled: string[]; failed: string[]; skipped: string[] }
+
+const PERM_META: Record<PermKey, { label: string; on: typeof Mic; off: typeof Mic }> = {
+  microphone: { label: 'Microphone', on: Mic, off: MicOff },
+  camera: { label: 'Camera', on: Camera, off: CameraOff },
+  location: { label: 'Location', on: MapPin, off: MapPinOff },
+  contacts: { label: 'Contacts', on: ContactRound, off: UserX },
+};
+
+/** "Can use microphone · Block" — or "Microphone blocked · Undo" once revoked. */
+function PermissionControl({ perm, app, blocked, canChange, onChange }: { perm: PermKey; app: DeviceApp; blocked: boolean; canChange: boolean; onChange: (block: boolean) => Promise<void> }) {
+  const [busy, setBusy] = useState(false);
+  const m = PERM_META[perm];
+  const Icon = blocked ? m.off : m.on;
+  const name = app.label ?? app.package;
+  return (
+    <span className={cn('inline-flex items-stretch overflow-hidden rounded-md border text-xs', blocked ? 'border-line bg-surface-2' : 'border-serious/30 bg-serious-soft')}>
+      <span className={cn('inline-flex items-center gap-1 px-1.5 py-0.5 font-medium', blocked ? 'text-muted' : 'text-serious-fg')} title={blocked ? `${name} can no longer use the ${perm}` : `${name} is allowed to use the ${perm}`}>
+        <Icon className="size-3" aria-hidden />
+        {blocked ? `${m.label} blocked` : m.label}
+      </span>
+      {canChange && (
+        <button
+          type="button"
+          disabled={busy}
+          aria-label={blocked ? `Allow ${name} to use the ${perm} again` : `Block ${perm} for ${name}`}
+          onClick={async () => {
+            setBusy(true);
+            await onChange(!blocked);
+            setBusy(false);
+          }}
+          className={cn('border-l px-1.5 font-medium transition-colors disabled:opacity-50', blocked ? 'border-line text-accent-fg hover:bg-surface-3' : 'border-serious/30 text-fg hover:bg-serious/15')}
+        >
+          {busy ? '…' : blocked ? 'Undo' : `Block ${perm}`}
+        </button>
+      )}
+    </span>
+  );
+}
+
+function DebloatList({ title, items, labelOf, tone, icon, empty }: { title: string; items: string[]; labelOf: (p: string) => string | null | undefined; tone: 'ok' | 'crit' | 'neutral'; icon: typeof Mic; empty?: string }) {
+  return (
+    <div>
+      <StatusText tone={tone} icon={icon} className="mb-1.5 text-sm">{title} ({items.length})</StatusText>
+      {items.length === 0 ? (
+        <p className="text-sm text-muted">{empty}</p>
+      ) : (
+        <ul className="space-y-1">
+          {items.map((p) => (
+            <li key={p} className="flex items-baseline justify-between gap-3 rounded-md bg-surface-2 px-2.5 py-1.5">
+              {labelOf(p) ? (
+                <>
+                  <span className="truncate text-sm text-fg">{labelOf(p)}</span>
+                  <span className="truncate font-mono text-[11px] text-muted">{p}</span>
+                </>
+              ) : (
+                <span className="truncate font-mono text-[12px] text-fg">{p}</span>
+              )}
+            </li>
+          ))}
+        </ul>
+      )}
+    </div>
   );
 }

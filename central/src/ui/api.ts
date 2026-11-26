@@ -112,6 +112,8 @@ export type Ok = { ok: boolean };
 export type GatewayWithLogs = Gateway & { logs: string[] };
 export type MdnsState = { config: MdnsConfig; status: MdnsStatus | null; interfaces: GatewayInterface[] };
 export type GuestResetResult = { results: { device_id: string; ok: boolean; detail: string }[] };
+/** One row of GET /api/sites/:id/apps — the union of apps on a site's devices. */
+export interface SiteApp { package: string; label: string | null; system: boolean; category: string | null; risk: string | null; devices: number; kinds: DeviceKind[] }
 export type DnsLogQuery = { device_id?: string; q?: string; action?: string; limit?: number; before?: number };
 
 export const api = {
@@ -136,6 +138,7 @@ export const api = {
     enroll: (id: string) => post<EnrollResult>(`/api/sites/${enc(id)}/enroll`),
     gateway: (id: string) => get<GatewayWithLogs>(`/api/sites/${enc(id)}/gateway`),
     gatewayAction: (id: string, action: 'restart' | 'update' | 'revoke') => post<Ok>(`/api/sites/${enc(id)}/gateway/${action}`),
+    apps: (id: string) => get<SiteApp[]>(`/api/sites/${enc(id)}/apps`),
     discover: (id: string) => post<Discovered[]>(`/api/sites/${enc(id)}/discover`),
     discovered: (id: string) => get<Discovered[]>(`/api/sites/${enc(id)}/discovered`),
     adopt: (id: string, b: { ip: string; kind: DeviceKind; name: string; room?: string; port?: number }) => post<Device>(`/api/sites/${enc(id)}/adopt`, b),

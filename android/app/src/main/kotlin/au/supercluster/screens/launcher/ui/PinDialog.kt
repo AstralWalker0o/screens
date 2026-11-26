@@ -30,6 +30,7 @@ import androidx.compose.ui.focus.focusRequester
 import androidx.compose.ui.input.key.KeyEventType
 import androidx.compose.ui.input.key.onPreviewKeyEvent
 import androidx.compose.ui.input.key.type
+import androidx.compose.ui.res.painterResource
 import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextAlign
@@ -38,6 +39,7 @@ import androidx.compose.ui.unit.sp
 import androidx.compose.ui.window.Dialog
 import androidx.compose.ui.window.DialogProperties
 import androidx.tv.material3.ClickableSurfaceDefaults
+import androidx.tv.material3.Icon
 import androidx.tv.material3.MaterialTheme
 import androidx.tv.material3.Surface
 import androidx.tv.material3.SurfaceDefaults
@@ -48,6 +50,7 @@ import au.supercluster.screens.launcher.core.PinAttemptLimiter
 import kotlinx.coroutines.delay
 
 private const val DELETE = "del"
+private val CONFIRM_KEYS = setOf(KeyEvent.KEYCODE_DPAD_CENTER, KeyEvent.KEYCODE_ENTER)
 private const val SUBMIT = "ok"
 
 /**
@@ -65,6 +68,7 @@ fun PinDialog(
     var wrong by remember { mutableStateOf(false) }
     var now by remember { mutableLongStateOf(SystemClock.elapsedRealtime()) }
     val firstKey = remember { FocusRequester() }
+    val confirmArmed = remember { mutableStateOf(false) }
     val locked = limiter.isLocked(now)
 
     LaunchedEffect(Unit) {
@@ -114,12 +118,28 @@ fun PinDialog(
                 contentColor = MaterialTheme.colorScheme.onSurface,
             ),
             modifier = Modifier.onPreviewKeyEvent { event ->
+                val native = event.nativeKeyEvent
+                // The dialog opens on a long-press of OK, so the rest of that press (repeats and
+                // the release) would otherwise "click" the focused key. Only accept OK/Enter
+                // presses that started inside the dialog.
+                if (native.keyCode in CONFIRM_KEYS) {
+                    when {
+                        event.type == KeyEventType.KeyDown && native.repeatCount == 0 -> confirmArmed.value = true
+                        !confirmArmed.value -> return@onPreviewKeyEvent true
+                        event.type == KeyEventType.KeyUp -> confirmArmed.value = false
+                    }
+                    return@onPreviewKeyEvent false
+                }
+                if (native.keyCode == KeyEvent.KEYCODE_NUMPAD_ENTER) {
+                    // Submit on press; swallow the release too so it can't "click" the focused key.
+                    if (event.type == KeyEventType.KeyDown && native.repeatCount == 0) press(SUBMIT)
+                    return@onPreviewKeyEvent true
+                }
                 if (event.type != KeyEventType.KeyDown) return@onPreviewKeyEvent false
-                when (val code = event.nativeKeyEvent.keyCode) {
+                when (val code = native.keyCode) {
                     in KeyEvent.KEYCODE_0..KeyEvent.KEYCODE_9 -> press((code - KeyEvent.KEYCODE_0).toString()).let { true }
                     in KeyEvent.KEYCODE_NUMPAD_0..KeyEvent.KEYCODE_NUMPAD_9 -> press((code - KeyEvent.KEYCODE_NUMPAD_0).toString()).let { true }
                     KeyEvent.KEYCODE_DEL -> press(DELETE).let { true }
-                    KeyEvent.KEYCODE_NUMPAD_ENTER -> press(SUBMIT).let { true }
                     else -> false
                 }
             },
@@ -196,7 +216,7 @@ private fun PinDots(count: Int) {
 private fun KeypadKey(key: String, modifier: Modifier, onClick: () -> Unit) {
     val accent = MaterialTheme.colorScheme.primary
     val label = when (key) {
-        DELETE -> "⌫"
+        DELETE -> null // drawn as an icon: not every TV font has a backspace glyph
         SUBMIT -> stringResource(R.string.pin_ok)
         else -> key
     }
@@ -215,11 +235,19 @@ private fun KeypadKey(key: String, modifier: Modifier, onClick: () -> Unit) {
         scale = ClickableSurfaceDefaults.scale(focusedScale = 1.08f),
     ) {
         Box(Modifier.width(84.dp).height(52.dp), contentAlignment = Alignment.Center) {
-            Text(
-                text = label,
-                style = MaterialTheme.typography.headlineSmall.copy(fontSize = if (key == SUBMIT) 22.sp else 26.sp),
-                fontWeight = FontWeight.Medium,
-            )
+            if (label == null) {
+                Icon(
+                    painter = painterResource(R.drawable.ic_backspace),
+                    contentDescription = stringResource(R.string.pin_delete),
+                    modifier = Modifier.size(28.dp),
+                )
+            } else {
+                Text(
+                    text = label,
+                    style = MaterialTheme.typography.headlineSmall.copy(fontSize = if (key == SUBMIT) 22.sp else 26.sp),
+                    fontWeight = FontWeight.Medium,
+                )
+            }
         }
     }
 }

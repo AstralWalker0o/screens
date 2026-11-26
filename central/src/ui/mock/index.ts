@@ -239,7 +239,7 @@ const NEEDS: Record<string, Device['capabilities'][number] | undefined> = {
   screenshot: 'screenshot', shell: 'shell', private_dns: 'private_dns', media: 'media', group: 'group', ungroup: 'group', toast: 'toast',
   guest_reset: 'guest_reset', power_on: 'power', power_off: 'power',
   launcher_install: 'launcher', launcher_config: 'launcher', launcher_status: 'launcher', launcher_remove: 'launcher', welcome_show: 'launcher',
-  adb_pair: 'shell', revoke_permission: 'disable', grant_permission: 'disable', debloat: 'disable', input: 'remote', favorites: 'media', play_favorite: 'media', eq: 'volume', sleep_timer: 'media',
+  adb_pair: 'shell', revoke_permission: 'disable', grant_permission: 'disable', debloat: 'disable', input: 'remote', favorites: 'favorites', play_favorite: 'favorites', eq: 'eq', sleep_timer: 'media', led: 'led',
 };
 const KIND_ONLY: Record<string, DeviceKind> = { input: 'samsung', favorites: 'sonos', play_favorite: 'sonos', eq: 'sonos', sleep_timer: 'sonos', adb_pair: 'android' };
 const revoked = new Map<string, boolean>();
@@ -414,11 +414,12 @@ async function command(d: Device, cmd: string, args: Record<string, unknown> = {
           { title: 'Lost in Yesterday', artist: 'Tame Impala', album: 'The Slow Rush' },
         ];
         const i = Math.max(0, tracks.findIndex((t) => t.title === np.title));
-        Object.assign(np, tracks[(i + (a === 'next' ? 1 : tracks.length - 1)) % tracks.length], { position_s: 0, duration_s: 214, state: 'PLAYING' });
+        Object.assign(np, tracks[(i + (a === 'next' ? 1 : tracks.length - 1)) % tracks.length], { state: 'PLAYING' });
       }
       for (const o of groupDevs.length ? groupDevs : [d]) {
         const own = (o.facts.now_playing ?? {}) as Record<string, unknown>;
         o.facts.now_playing = { ...np, volume: own.volume, muted: own.muted };
+        if (a === 'next' || a === 'prev') o.facts.position = { elapsed_s: 0, duration_s: 214 };
       }
       return { ok: true };
     }
@@ -498,11 +499,12 @@ async function command(d: Device, cmd: string, args: Record<string, unknown> = {
     case 'play_favorite': {
       const fav = SONOS_FAVORITES.find((f) => f.uri === args.uri);
       if (!fav) throw err(400, 'bad_args', 'uri (from favorites) required');
-      const np = { ...((d.facts.now_playing ?? {}) as Record<string, unknown>), state: 'PLAYING', title: fav.title, artist: fav.kind === 'radio' ? 'Live radio' : 'Sonos favourite', album: '', source: fav.kind === 'radio' ? 'TuneIn' : 'Spotify', position_s: 0, duration_s: fav.kind === 'radio' ? undefined : 240 };
+      const np = { ...((d.facts.now_playing ?? {}) as Record<string, unknown>), state: 'PLAYING', title: fav.title, artist: fav.kind === 'radio' ? 'Live radio' : 'Sonos favourite', album: '' };
       const coordUuid = (d.facts.group as { coordinator?: string } | undefined)?.coordinator;
       for (const o of db.devices.filter((x) => x.kind === 'sonos' && (x.facts.group as { coordinator?: string } | undefined)?.coordinator === coordUuid)) {
         const own = (o.facts.now_playing ?? {}) as Record<string, unknown>;
         o.facts.now_playing = { ...np, volume: own.volume, muted: own.muted };
+        o.facts.position = fav.kind === 'radio' ? { elapsed_s: null, duration_s: null } : { elapsed_s: 0, duration_s: 240 };
       }
       return { ok: true };
     }
@@ -687,6 +689,20 @@ on('POST', '/api/sites/:id/gateway/:action', async (c) => {
   logAudit(`gateway.${action}`, 'gateway', gw.id, sid);
   return { ok: true };
 });
+on('GET', '/api/sites/:id/apps', (c) => {
+  const sid = c.params[0];
+  findSite(sid);
+  const m = new Map<string, { package: string; label: string | null; system: boolean; category: string | null; risk: string | null; devices: number; kinds: DeviceKind[] }>();
+  for (const d of db.devices.filter((x) => x.site_id === sid)) {
+    for (const a of db.apps[d.id] ?? []) {
+      const e = m.get(a.package) ?? { package: a.package, label: a.label ?? null, system: a.system, category: a.category ?? null, risk: a.risk ?? null, devices: 0, kinds: [] };
+      e.devices++;
+      if (!e.kinds.includes(d.kind)) e.kinds.push(d.kind);
+      m.set(a.package, e);
+    }
+  }
+  return [...m.values()].sort((a, b2) => Number(a.system) - Number(b2.system) || (a.label ?? a.package).localeCompare(b2.label ?? b2.package));
+});
 on('POST', '/api/sites/:id/discover', async (c) => {
   const sid = c.params[0];
   const gw = db.gateways.find((g) => g.site_id === sid && g.status === 'online');
@@ -810,6 +826,14 @@ on('POST', '/api/devices/bulk', async (c) => {
       continue;
     }
     try {
+      if (cmd === 'dns_mode') {
+        const mode = String(args?.mode ?? '');
+        if (!['enforce', 'monitor', 'off', 'bypass'].includes(mode)) throw err(400, 'bad_args', 'mode must be enforce, monitor, off or bypass');
+        d.dns_mode = mode as Device['dns_mode'];
+        d.monitor_until = mode === 'monitor' ? Date.now() + findSite(d.site_id).settings.monitor_days * D : null;
+        results.push({ device_id: id, name: d.name, ok: true });
+        continue;
+      }
       const r = await command(d, cmd, args);
       results.push({ device_id: id, name: d.name, ok: r.ok, data: r.data });
     } catch (e) {

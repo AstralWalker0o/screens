@@ -43,6 +43,8 @@ object ConfigParser {
     private val SHA256_HEX = Regex("^[0-9a-fA-F]{64}$")
     private val COLOR_HEX = Regex("^#([0-9a-fA-F]{6}|[0-9a-fA-F]{8})$")
     private val BASE64_URL_CHARS = Regex("[-_]")
+    private val BYTE_ORDER_MARK = Char(0xFEFF) // tolerated at the start of the JSON
+    private const val ELLIPSIS = "…"
 
     fun isValidPackageName(name: String): Boolean = name.length <= 255 && PACKAGE_NAME.matches(name)
 
@@ -86,7 +88,7 @@ object ConfigParser {
     @Throws(ConfigException::class)
     fun parse(text: String): LauncherConfig {
         val root = try {
-            Json.parse(text.removePrefix("﻿"))
+            Json.parse(if (text.startsWith(BYTE_ORDER_MARK)) text.substring(1) else text)
         } catch (e: Json.ParseException) {
             throw ConfigException("invalid JSON: ${e.message}")
         }
@@ -210,7 +212,7 @@ object ConfigParser {
         val count = text.codePointCount(0, text.length)
         if (count <= max) return text
         val end = text.offsetByCodePoints(0, max - 1)
-        return text.substring(0, end).trimEnd() + "…"
+        return text.substring(0, end).trimEnd() + ELLIPSIS
     }
 
     /** A JSON object plus its path, for typed access with precise error messages. */

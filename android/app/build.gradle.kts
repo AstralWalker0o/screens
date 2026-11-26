@@ -59,6 +59,12 @@ android {
         buildConfig = true
     }
 
+    lint {
+        // Versions are pinned on purpose: Compose 1.12+, core 1.18+ and activity 1.13 need
+        // compileSdk 37 / AGP 9.1, and targetSdk stays at 36 for now.
+        disable += setOf("GradleDependency", "NewerVersionAvailable", "AndroidGradlePluginVersion")
+    }
+
     packaging {
         resources {
             excludes += setOf("/META-INF/{AL2.0,LGPL2.1}", "/META-INF/*.version", "DebugProbesKt.bin")

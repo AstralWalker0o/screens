@@ -199,15 +199,18 @@ export function AppShell({ children }: { children?: ReactNode }) {
   }, [loc.pathname]);
 
   return (
-    <div className="min-h-dvh">
+    <div className="flex min-h-dvh">
       <a href="#main" className="sr-only z-50 rounded-lg bg-accent px-3 py-2 text-on-accent focus:not-sr-only focus:fixed focus:top-2 focus:left-2">
         Skip to content
       </a>
-      <aside className="fixed inset-y-0 left-0 z-30 hidden w-60 border-r border-line bg-surface/60 backdrop-blur lg:block">
-        <SidebarContent />
-      </aside>
+      {/* The column stretches with the page so its background and border never stop short; the nav itself sticks. */}
+      <div className="relative z-30 hidden w-60 shrink-0 border-r border-line bg-surface/60 lg:block">
+        <aside className="sticky top-0 h-dvh">
+          <SidebarContent />
+        </aside>
+      </div>
       <MobileDrawer open={drawer} onClose={() => setDrawer(false)} />
-      <div className="lg:pl-60">
+      <div className="min-w-0 flex-1">
         <header className="sticky top-0 z-20 flex h-14 items-center gap-2 border-b border-line bg-bg/85 px-3 backdrop-blur sm:px-4 lg:px-6">
           <IconButton icon={MenuIcon} label="Open menu" onClick={() => setDrawer(true)} className="lg:hidden" />
           <div className="lg:hidden">

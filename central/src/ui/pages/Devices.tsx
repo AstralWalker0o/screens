@@ -3,7 +3,7 @@ import { Link, useSearchParams } from 'react-router';
 import { TvMinimalPlay, PowerOff, Sparkles, ShieldCheck, X, ChevronDown, Radar, ShieldAlert, CircleCheck, CircleX } from 'lucide-react';
 import type { BulkCommandResult, Device, DeviceKind, DeviceStatus, DnsMode } from '../../shared/types';
 import { api } from '../api';
-import { errorMessage, invalidate, reportError, useQuery } from '../lib/query';
+import { invalidate, reportError, useQuery } from '../lib/query';
 import { toast } from '../lib/toast';
 import { DEVICE_STATUS, DNS_MODE, DNS_MODES, KIND, KIND_ORDER, gradeFor, kindLabel } from '../lib/labels';
 import { Button, ButtonLink, Card, EmptyState, PageHeader, RelTime, SkeletonRows, StatusText, TableWrap, cn, td, th } from '../components/ui';
@@ -68,10 +68,7 @@ export default function Devices() {
         targets = sel.filter((d) => d.capabilities.includes(cap));
         res = await api.devices.bulk({ device_ids: targets.map((d) => d.id), command: bulk });
       } else {
-        // DNS mode is a device setting, not a command: one PATCH per device.
-        const mode = bulk.mode;
-        const settled = await Promise.allSettled(sel.map((d) => api.devices.update(d.id, { dns_mode: mode })));
-        res = { results: settled.map((r, i) => ({ device_id: sel[i].id, name: sel[i].name, ok: r.status === 'fulfilled', error: r.status === 'rejected' ? errorMessage(r.reason) : undefined })) };
+        res = await api.devices.bulk({ device_ids: sel.map((d) => d.id), command: 'dns_mode', args: { mode: bulk.mode } });
       }
       const named = res.results.map((r) => ({ ...r, name: r.name ?? targets.find((d) => d.id === r.device_id)?.name ?? r.device_id }));
       const failed = named.filter((r) => !r.ok).length;

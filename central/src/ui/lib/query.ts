@@ -74,19 +74,19 @@ export interface QueryResult<T> {
 export function useQuery<T>(
   key: string | null,
   fn: () => Promise<T>,
-  opts: { refreshMs?: number; staleMs?: number } = {},
+  opts: { refreshMs?: number; staleMs?: number; /** show errors inline only, no toast */ silent?: boolean } = {},
 ): QueryResult<T> {
   const [, force] = useReducer((x: number) => x + 1, 0);
   const fnRef = useRef(fn);
   fnRef.current = fn;
-  const { refreshMs, staleMs = 15_000 } = opts;
+  const { refreshMs, staleMs = 15_000, silent = false } = opts;
 
   useEffect(() => {
     if (!key) return;
     const e = entry(key);
     e.fn = () => fnRef.current();
     e.subs.add(force);
-    if (e.stale || Date.now() - e.updatedAt > staleMs) void run(key, e, false);
+    if (e.stale || Date.now() - e.updatedAt > staleMs) void run(key, e, silent);
     let t: ReturnType<typeof setInterval> | undefined;
     if (refreshMs) {
       t = setInterval(() => {
@@ -97,7 +97,7 @@ export function useQuery<T>(
       e.subs.delete(force);
       if (t) clearInterval(t);
     };
-  }, [key, refreshMs, staleMs]);
+  }, [key, refreshMs, staleMs, silent]);
 
   const e = key ? cache.get(key) : undefined;
   const refetch = useCallback(async () => {

@@ -20,7 +20,7 @@ Check with `aapt2 dump permissions dist/screens-launcher.apk`. The only permissi
 
 You need:
 
-- JDK 17 or newer (tested with 17 and 21)
+- JDK 17 or newer (built and tested with OpenJDK 21; bytecode targets 17)
 - the Android SDK with `platforms;android-36` and `build-tools;36.0.0`, installed **outside** the
   repo, for example:
 
@@ -75,6 +75,10 @@ SCREENS_KEY_ALIAS=screens SCREENS_KEY_PASSWORD=… ./gradlew assembleRelease
 ```sh
 adb install -r dist/screens-launcher.apk
 adb shell cmd package set-home-activity au.supercluster.screens.launcher/.LauncherActivity
+# A freshly installed app is in Android's "stopped" state and gets no broadcasts until it has
+# been launched once, so start it (or press Home) before the first CONFIG/STATUS broadcast,
+# or add --include-stopped-packages to `am broadcast`.
+adb shell am start -n au.supercluster.screens.launcher/.LauncherActivity
 
 # config (see docs/LAUNCHER.md for the JSON)
 adb shell am broadcast -a au.supercluster.screens.launcher.CONFIG \
@@ -145,7 +149,7 @@ always equals the SHA-256 of what the gateway sent.
 android/
 ├── build.gradle.kts, settings.gradle.kts, gradle.properties
 ├── gradle/libs.versions.toml           # version catalog
-├── gradle/wrapper/, gradlew            # Gradle 8.14.3 wrapper
+├── gradle/wrapper/, gradlew            # Gradle 8.14.8 wrapper (checksum-pinned)
 └── app/
     ├── build.gradle.kts                # signing from SCREENS_* env vars, R8 on release
     └── src/
