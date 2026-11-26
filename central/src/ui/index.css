@@ -1,0 +1,228 @@
+@import "tailwindcss";
+
+/* `dark:` follows the resolved theme attribute set in index.html / lib/theme.ts,
+   which itself follows prefers-color-scheme unless the user picked one. */
+@custom-variant dark (&:where([data-theme="dark"], [data-theme="dark"] *));
+
+/*
+ * Design tokens. Light values live in @theme (so Tailwind generates bg-surface,
+ * text-muted, border-line, …); dark values override the same variables below.
+ * One accent (blue), semantic status colours, chart chrome and the categorical
+ * series slots (validated with the dataviz palette checker against both surfaces).
+ */
+@theme static {
+  --color-*: initial;
+  --color-white: #ffffff;
+  --color-black: #000000;
+
+  --font-sans: ui-sans-serif, system-ui, -apple-system, "Segoe UI", Roboto, "Helvetica Neue", Arial, "Noto Sans", sans-serif;
+  --font-mono: ui-monospace, SFMono-Regular, "SF Mono", Menlo, Consolas, "Liberation Mono", monospace;
+
+  /* surfaces & ink */
+  --color-bg: #f6f6f7;
+  --color-surface: #ffffff;
+  --color-surface-2: #f4f4f6;
+  --color-surface-3: #eaeaee;
+  --color-line: #e4e4e9;
+  --color-line-strong: #d0d0d8;
+  --color-fg: #18181b;
+  --color-muted: #5f5f68;
+  --color-subtle: #80808a;
+  --color-overlay: rgb(10 10 12 / 0.45);
+
+  /* the one accent */
+  --color-accent: #2370cd;
+  --color-accent-hover: #1b64be;
+  --color-accent-fg: #1b64be;
+  --color-accent-soft: #e9f2fd;
+  --color-on-accent: #ffffff;
+
+  /* status: mark colour / text ink / soft fill */
+  --color-ok: #0aac23;
+  --color-ok-fg: #0a7a1f;
+  --color-ok-soft: #e6f6e9;
+  --color-warn: #fbb315;
+  --color-warn-fg: #8a5a00;
+  --color-warn-soft: #fef4dc;
+  --color-serious: #f18a59;
+  --color-serious-fg: #b4461a;
+  --color-serious-soft: #fdede5;
+  --color-crit: #dc3c3d;
+  --color-crit-fg: #b42324;
+  --color-crit-soft: #fcebeb;
+  --color-danger: #c22d2e;
+
+  /* DNS actions: blocked = critical, would-block = amber, allowed = neutral */
+  --color-allowed: #a1a1aa;
+
+  /* chart chrome */
+  --color-grid: #ececef;
+  --color-axis: #c6c6cc;
+
+  /* categorical series slots (fixed order, never cycled) */
+  --color-s1: #257de0;
+  --color-s2: #f47230;
+  --color-s3: #00b894;
+  --color-s4: #f2a600;
+  --color-s5: #ee7fac;
+  --color-s6: #008a17;
+  --color-s7: #6a4ce2;
+  --color-s8: #ec4647;
+  --color-other: #b4b4bc;
+
+  --shadow-card: 0 1px 2px rgb(16 16 20 / 0.04), 0 0 0 0 transparent;
+  --shadow-pop: 0 10px 30px -8px rgb(16 16 20 / 0.22), 0 2px 6px rgb(16 16 20 / 0.08);
+
+  --animate-pulse-soft: pulse-soft 1.6s ease-in-out infinite;
+  --animate-flash: flash 0.9s ease-out;
+  --animate-toast-in: toast-in 0.18s ease-out;
+}
+
+:root[data-theme="dark"] {
+  color-scheme: dark;
+  --color-bg: #0c0c0e;
+  --color-surface: #18181b;
+  --color-surface-2: #1f1f23;
+  --color-surface-3: #29292e;
+  --color-line: #2a2a30;
+  --color-line-strong: #3b3b43;
+  --color-fg: #ededf0;
+  --color-muted: #a1a1aa;
+  --color-subtle: #787882;
+  --color-overlay: rgb(0 0 0 / 0.6);
+
+  --color-accent: #2370cd;
+  --color-accent-hover: #2f7de1;
+  --color-accent-fg: #6aabf1;
+  --color-accent-soft: rgb(51 140 237 / 0.14);
+  --color-on-accent: #ffffff;
+
+  --color-ok: #0aac23;
+  --color-ok-fg: #53c556;
+  --color-ok-soft: rgb(10 172 35 / 0.14);
+  --color-warn: #fbb315;
+  --color-warn-fg: #fbb315;
+  --color-warn-soft: rgb(251 179 21 / 0.13);
+  --color-serious: #f18a59;
+  --color-serious-fg: #f5a27a;
+  --color-serious-soft: rgb(241 138 89 / 0.14);
+  --color-crit: #dc3c3d;
+  --color-crit-fg: #f07272;
+  --color-crit-soft: rgb(220 60 61 / 0.16);
+  --color-danger: #c93536;
+
+  --color-allowed: #5d5d68;
+  --color-grid: #27272c;
+  --color-axis: #47474f;
+
+  --color-s1: #338ced;
+  --color-s2: #e76624;
+  --color-s3: #00a888;
+  --color-s4: #d28e05;
+  --color-s5: #e24d8b;
+  --color-s6: #0aac23;
+  --color-s7: #9887ef;
+  --color-s8: #eb6263;
+  --color-other: #5d5d68;
+
+  --shadow-card: 0 0 0 0 transparent;
+  --shadow-pop: 0 12px 32px -6px rgb(0 0 0 / 0.6), 0 0 0 1px rgb(255 255 255 / 0.04);
+}
+
+:root[data-theme="light"] {
+  color-scheme: light;
+}
+
+@layer base {
+  html {
+    -webkit-text-size-adjust: 100%;
+    -webkit-tap-highlight-color: transparent;
+  }
+  body {
+    background: var(--color-bg);
+    color: var(--color-fg);
+    font-family: var(--font-sans);
+    font-size: 14px;
+    line-height: 1.45;
+    -webkit-font-smoothing: antialiased;
+    -moz-osx-font-smoothing: grayscale;
+    overflow-x: hidden;
+  }
+  :focus-visible {
+    outline: 2px solid var(--color-accent);
+    outline-offset: 2px;
+  }
+  ::selection {
+    background: color-mix(in oklab, var(--color-accent) 28%, transparent);
+  }
+  button,
+  [role="button"] {
+    cursor: pointer;
+  }
+  button:disabled {
+    cursor: not-allowed;
+  }
+  input,
+  select,
+  textarea {
+    font: inherit;
+    color: inherit;
+  }
+  dialog {
+    color: inherit;
+  }
+  dialog::backdrop {
+    background: var(--color-overlay);
+    backdrop-filter: blur(2px);
+  }
+  * {
+    scrollbar-width: thin;
+    scrollbar-color: var(--color-line-strong) transparent;
+  }
+  .tnum {
+    font-variant-numeric: tabular-nums;
+  }
+}
+
+@keyframes pulse-soft {
+  0%,
+  100% {
+    opacity: 1;
+  }
+  50% {
+    opacity: 0.45;
+  }
+}
+@keyframes flash {
+  0% {
+    background-color: color-mix(in oklab, var(--color-accent) 16%, transparent);
+  }
+  100% {
+    background-color: transparent;
+  }
+}
+@keyframes toast-in {
+  from {
+    opacity: 0;
+    transform: translateY(6px) scale(0.98);
+  }
+  to {
+    opacity: 1;
+    transform: none;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  *,
+  *::before,
+  *::after {
+    animation-duration: 0.01ms !important;
+    transition-duration: 0.01ms !important;
+  }
+}
+
+@media (forced-colors: active) {
+  .chart-mark {
+    forced-color-adjust: none;
+  }
+}
