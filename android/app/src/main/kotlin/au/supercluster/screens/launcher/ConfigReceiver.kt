@@ -6,8 +6,11 @@ import android.content.Intent
 import android.util.Log
 import au.supercluster.screens.launcher.core.ConfigParser
 import au.supercluster.screens.launcher.core.ConfigResult
+import au.supercluster.screens.launcher.core.LastErrorPolicy
 import au.supercluster.screens.launcher.core.StatusReport
+import au.supercluster.screens.launcher.data.AssetStore
 import au.supercluster.screens.launcher.data.ConfigStore
+import au.supercluster.screens.launcher.data.Diagnostics
 import au.supercluster.screens.launcher.data.HomeStatus
 import java.io.IOException
 
@@ -46,6 +49,7 @@ class ConfigReceiver : BroadcastReceiver() {
         return when (val result = ConfigParser.fromBase64(b64)) {
             is ConfigResult.Error -> {
                 Log.w(TAG, "config rejected: ${result.message}")
+                Diagnostics.record(context, LastErrorPolicy.configRejected(result.message))
                 RESULT_ERROR to "error:" + oneLine(result.message)
             }
             is ConfigResult.Ok -> {
@@ -53,20 +57,40 @@ class ConfigReceiver : BroadcastReceiver() {
                 try {
                     ConfigStore.save(context, result, showWelcome)
                 } catch (e: IOException) {
+                    Diagnostics.record(context, LastErrorPolicy.configRejected("could not store config"))
                     return RESULT_ERROR to "error:could not store config"
                 }
+                // Unreferenced assets get 24 h from now before cleanup. A config that references
+                // assets we don't have is still applied: the UI falls back and STATUS lists them.
+                AssetStore.onConfigApplied(context)
+                val referenced = result.config.referencedAssets()
+                val stored = AssetStore.storedShas(context)
+                Diagnostics.update(context) { LastErrorPolicy.afterConfigApplied(it, referenced, stored) }
                 // Never log the config itself: it contains the guest Wi-Fi password.
-                Log.i(TAG, "config applied sha=${result.sha256} show_welcome=$showWelcome")
+                Log.i(TAG, "config applied sha=${result.sha256} v=${result.config.version} show_welcome=$showWelcome missing_assets=${(referenced - stored).size}")
                 RESULT_OK to "ok:${result.sha256}"
             }
         }
     }
 
-    private fun status(context: Context) = StatusReport(
-        version = BuildConfig.VERSION_NAME,
-        configSha = ConfigStore.current(context).configSha,
-        isHome = HomeStatus.isDefaultHome(context),
-    )
+    private fun status(context: Context): StatusReport {
+        // A `content write` that just returned may still be verifying; let it land first.
+        AssetStore.awaitIdle(STATUS_WAIT_MILLIS)
+        AssetStore.cleanup(context)
+        val state = ConfigStore.current(context)
+        val stored = AssetStore.storedShas(context)
+        val referenced = state.config.referencedAssets()
+        return StatusReport(
+            version = BuildConfig.VERSION_NAME,
+            versionCode = BuildConfig.VERSION_CODE.toLong(),
+            configSha = state.configSha,
+            configVersion = state.configSha?.let { state.config.version },
+            isHome = HomeStatus.isDefaultHome(context),
+            assets = stored.toList(),
+            missingAssets = (referenced - stored).toList(),
+            lastError = Diagnostics.lastError(context)?.message,
+        )
+    }
 
     private fun oneLine(s: String) = s.replace(Regex("[\\r\\n\\t]+"), " ").take(300)
 
@@ -78,5 +102,6 @@ class ConfigReceiver : BroadcastReceiver() {
         const val RESULT_OK = 1
         const val RESULT_ERROR = 0
         private const val TAG = "ScreensConfig"
+        private const val STATUS_WAIT_MILLIS = 3_000L
     }
 }

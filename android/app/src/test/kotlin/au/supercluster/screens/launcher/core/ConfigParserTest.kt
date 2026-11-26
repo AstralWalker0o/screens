@@ -112,11 +112,13 @@ class ConfigParserTest {
     }
 
     @Test
-    fun requiresVersionOne() {
-        assertEquals("v: missing (expected 1)", error("""{"site_name":"x"}"""))
-        assertEquals("v: unsupported config version 2", error("""{"v":2}"""))
+    fun requiresAKnownVersion() {
+        // v2 (docs/LAUNCHER-V2.md) is now accepted too; see ConfigParserV2Test.
+        assertEquals("v: missing (expected 1 or 2)", error("""{"site_name":"x"}"""))
+        assertEquals("v: unsupported config version 3", error("""{"v":3}"""))
+        assertEquals("v: unsupported config version 0", error("""{"v":0}"""))
         assertEquals("v: expected number", error("""{"v":"1"}"""))
-        ok("""{"v":1.0}""")
+        assertEquals(1, ok("""{"v":1.0}""").version)
     }
 
     @Test

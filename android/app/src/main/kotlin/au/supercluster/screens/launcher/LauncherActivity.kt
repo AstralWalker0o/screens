@@ -11,6 +11,7 @@ import android.widget.Toast
 import androidx.activity.ComponentActivity
 import androidx.activity.OnBackPressedCallback
 import androidx.activity.compose.setContent
+import androidx.compose.runtime.CompositionLocalProvider
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.mutableStateOf
@@ -22,12 +23,20 @@ import androidx.lifecycle.Lifecycle
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import androidx.lifecycle.lifecycleScope
 import androidx.lifecycle.repeatOnLifecycle
+import au.supercluster.screens.launcher.core.AppCandidate
 import au.supercluster.screens.launcher.core.AppSelector
+import au.supercluster.screens.launcher.core.HomeLayout
 import au.supercluster.screens.launcher.core.Pin
 import au.supercluster.screens.launcher.data.AppRepository
+import au.supercluster.screens.launcher.data.ArtLoader
+import au.supercluster.screens.launcher.data.AssetStore
 import au.supercluster.screens.launcher.data.ConfigStore
 import au.supercluster.screens.launcher.data.InstalledApp
+import au.supercluster.screens.launcher.data.NetworkMonitor
+import au.supercluster.screens.launcher.data.launchIntent
+import au.supercluster.screens.launcher.ui.HomeScreen
 import au.supercluster.screens.launcher.ui.LauncherScreen
+import au.supercluster.screens.launcher.ui.LocalArtSource
 import au.supercluster.screens.launcher.ui.ScreensTheme
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
@@ -37,8 +46,10 @@ import kotlinx.coroutines.withContext
 /**
  * The home screen (HOME + LEANBACK_LAUNCHER, singleTask).
  *
- * Shows the allowed apps in configured order, and hands over to [WelcomeActivity] whenever
- * "welcome pending" is set (at boot, or by a CONFIG broadcast with `show_welcome`).
+ * With a v2 config that has `home` it shows [HomeScreen] (wallpaper, top bar, rows of cards);
+ * otherwise the v1 grid of allowed apps in configured order. Either way it hands over to
+ * [WelcomeActivity] whenever "welcome pending" is set (at boot, or by a CONFIG broadcast with
+ * `show_welcome`).
  */
 class LauncherActivity : ComponentActivity() {
 
@@ -73,28 +84,55 @@ class LauncherActivity : ComponentActivity() {
             ContextCompat.RECEIVER_NOT_EXPORTED,
         )
 
+        val artLoader = ArtLoader.get(this)
         setContent {
             val state by ConfigStore.state(this).collectAsStateWithLifecycle()
             val config = state.config
             val apps = installed
-            val visible = remember(apps, config) {
-                apps?.let { list ->
-                    val byPackage = list.associateBy { it.candidate.packageName }
-                    AppSelector.select(list.map { it.candidate }, config, packageName)
-                        .mapNotNull { byPackage[it.packageName] }
+            val home = config.home
+            CompositionLocalProvider(LocalArtSource provides artLoader) {
+                ScreensTheme(accent = Color(config.accentArgb)) {
+                    if (home != null) {
+                        // v2: rows of cards over a wallpaper (docs/LAUNCHER-V2.md).
+                        val assets by AssetStore.state(this).collectAsStateWithLifecycle()
+                        val storedAssets = remember(assets) { assets.keys.toSet() }
+                        val network by NetworkMonitor.state(this).collectAsStateWithLifecycle()
+                        val rows = remember(apps, config) {
+                            apps?.let { list -> HomeLayout.build(list.map { it.candidate }, config, packageName) }
+                        }
+                        HomeScreen(
+                            home = home,
+                            rows = rows,
+                            storedAssets = storedAssets,
+                            kiosk = config.kiosk.enabled,
+                            pinRequired = Pin.isRequired(config),
+                            network = network,
+                            homeRequests = homeRequests,
+                            verifyPin = { Pin.matches(it, config.kiosk.pinSha256) },
+                            onLaunch = { launch(it.app) },
+                            onOpenSettings = ::openSettings,
+                        )
+                    } else {
+                        // v1 (or no config yet): the grid.
+                        val visible = remember(apps, config) {
+                            apps?.let { list ->
+                                val byPackage = list.associateBy { it.candidate.packageName }
+                                AppSelector.select(list.map { it.candidate }, config, packageName)
+                                    .mapNotNull { byPackage[it.packageName] }
+                            }
+                        }
+                        LauncherScreen(
+                            siteName = config.siteName,
+                            kiosk = config.kiosk.enabled,
+                            pinRequired = Pin.isRequired(config),
+                            apps = visible,
+                            homeRequests = homeRequests,
+                            verifyPin = { Pin.matches(it, config.kiosk.pinSha256) },
+                            onLaunch = { launch(it.candidate) },
+                            onOpenSettings = ::openSettings,
+                        )
+                    }
                 }
-            }
-            ScreensTheme(accent = Color(config.accentArgb)) {
-                LauncherScreen(
-                    siteName = config.siteName,
-                    kiosk = config.kiosk.enabled,
-                    pinRequired = Pin.isRequired(config),
-                    apps = visible,
-                    homeRequests = homeRequests,
-                    verifyPin = { Pin.matches(it, config.kiosk.pinSha256) },
-                    onLaunch = ::launch,
-                    onOpenSettings = ::openSettings,
-                )
             }
         }
 
@@ -115,6 +153,8 @@ class LauncherActivity : ComponentActivity() {
     override fun onResume() {
         super.onResume()
         reloadApps() // apps may have changed while we weren't listening
+        // Unreferenced assets expire 24 h after a config change; home resumes often, so check here.
+        lifecycleScope.launch(Dispatchers.IO) { runCatching { AssetStore.cleanup(this@LauncherActivity) } }
     }
 
     override fun onNewIntent(intent: Intent) {
@@ -134,7 +174,7 @@ class LauncherActivity : ComponentActivity() {
         }
     }
 
-    private fun launch(app: InstalledApp) {
+    private fun launch(app: AppCandidate) {
         try {
             startActivity(app.launchIntent())
         } catch (e: ActivityNotFoundException) {

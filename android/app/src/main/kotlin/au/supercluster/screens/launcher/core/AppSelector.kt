@@ -10,6 +10,8 @@ data class AppCandidate(
     val label: String,
     /** Found via CATEGORY_LEANBACK_LAUNCHER (preferred) rather than CATEGORY_LAUNCHER. */
     val leanback: Boolean,
+    /** The package's last update time (0 when unknown): part of the artwork cache key. */
+    val updatedAt: Long = 0L,
 )
 
 /**

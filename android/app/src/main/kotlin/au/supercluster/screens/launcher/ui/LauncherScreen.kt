@@ -62,12 +62,17 @@ import java.text.SimpleDateFormat
 import java.util.Date
 import java.util.Locale
 
-private val ScreenPadding = 48.dp // TV overscan-safe horizontal margin
 private val CardShape = RoundedCornerShape(14.dp)
 private const val COLUMNS = 5
 
+// Artwork size for the v1 grid (as in 1.x): banners 384x216 px, icons 160 px.
+private const val BANNER_W = 384
+private const val BANNER_H = 216
+private const val ICON_PX = 160
+
 /**
- * The home screen: header (site name, clock + date) and a D-pad grid of app cards.
+ * The v1 home screen (configs without `home`): header (site name, clock + date) and a D-pad
+ * grid of app cards. Configs with `home` use [HomeScreen].
  *
  * In kiosk mode there is no Settings tile; instead the clock is focusable and a long-press on
  * it asks for the PIN (or opens settings straight away when no PIN is configured).
@@ -243,10 +248,15 @@ private fun AppGrid(
         modifier = Modifier.fillMaxSize(),
     ) {
         itemsIndexed(apps, key = { _, app -> app.key }) { index, app ->
+            val art = rememberArt(
+                remember(app.candidate) {
+                    ArtRequest.AppCard(app.candidate, BANNER_W, BANNER_H, ICON_PX, preferBanner = true)
+                },
+            )
             AppCard(
                 label = app.label,
-                banner = app.banner,
-                icon = app.icon,
+                banner = art?.bitmap?.takeIf { art.kind == ArtKind.BANNER },
+                icon = art?.bitmap?.takeIf { art.kind == ArtKind.ICON },
                 focusRequester = if (index == 0) firstFocus else null,
                 onClick = { onLaunch(app) },
             )
