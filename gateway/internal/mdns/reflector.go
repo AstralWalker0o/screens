@@ -319,6 +319,17 @@ type Decision struct {
 	Drop    string   // "own", "rate", "parse", "nomatch", "dup" or ""
 	To      []string // interfaces to send to
 	Payload []byte
+	// PerTarget overrides Payload for interfaces whose rule stripped denied
+	// records from the packet.
+	PerTarget map[string][]byte
+}
+
+// PayloadFor returns the bytes to send to one target interface.
+func (d Decision) PayloadFor(iface string) []byte {
+	if p, ok := d.PerTarget[iface]; ok {
+		return p
+	}
+	return d.Payload
 }
 
 // Decide runs the reflection pipeline for a packet received on iface from
@@ -351,15 +362,35 @@ func (r *Reflector) Decide(iface string, pkt []byte, src netip.Addr, now time.Ti
 	}
 	seen := r.tracker.HostSeen(now)
 	var to []string
+	var per map[string][]byte
 	dupe := map[string]bool{iface: true}
 	for _, rule := range rules {
-		if !Match(m, rule, seen) {
+		mm, stripped := StripDenied(m, rule)
+		if stripped && len(mm.Question) == 0 && len(mm.Answer) == 0 && len(mm.Ns) == 0 {
 			continue
+		}
+		if !Match(mm, rule, seen) {
+			continue
+		}
+		var payload []byte
+		if stripped {
+			mm.Compress = true
+			b, err := mm.Pack()
+			if err != nil {
+				continue
+			}
+			payload, _ = PrepareForReflection(mm, b)
 		}
 		for _, t := range rule.To {
 			if !dupe[t] {
 				dupe[t] = true
 				to = append(to, t)
+				if stripped {
+					if per == nil {
+						per = map[string][]byte{}
+					}
+					per[t] = payload
+				}
 			}
 		}
 	}
@@ -371,7 +402,10 @@ func (r *Reflector) Decide(iface string, pkt []byte, src netip.Addr, now time.Ti
 	if changed {
 		r.dedup.Add(netx.Hash(out), now)
 	}
-	return Decision{To: to, Payload: out}
+	for _, p := range per {
+		r.dedup.Add(netx.Hash(p), now)
+	}
+	return Decision{To: to, Payload: out, PerTarget: per}
 }
 
 func (r *Reflector) handle(s *ifSock, pkt []byte, src netip.Addr, v6 bool) {
@@ -400,12 +434,12 @@ func (r *Reflector) handle(s *ifSock, pkt []byte, src netip.Addr, v6 bool) {
 			if t.p6 == nil {
 				continue
 			}
-			_, err = t.p6.WriteTo(d.Payload, &ipv6.ControlMessage{IfIndex: t.index}, GroupV6)
+			_, err = t.p6.WriteTo(d.PayloadFor(to), &ipv6.ControlMessage{IfIndex: t.index}, GroupV6)
 		} else {
 			if t.p4 == nil {
 				continue
 			}
-			_, err = t.p4.WriteTo(d.Payload, &ipv4.ControlMessage{IfIndex: t.index}, GroupV4)
+			_, err = t.p4.WriteTo(d.PayloadFor(to), &ipv4.ControlMessage{IfIndex: t.index}, GroupV4)
 		}
 		if err != nil {
 			r.log.Debug("mdns send failed", "iface", to, "err", err)

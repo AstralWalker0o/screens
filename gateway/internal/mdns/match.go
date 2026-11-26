@@ -157,6 +157,54 @@ func Match(m *dns.Msg, r Rule, seen HostSeenFunc) bool {
 	return found
 }
 
+// StripDenied returns a copy of m without the questions and records whose
+// service type the rule denies (owner names and PTR targets), and whether
+// anything was removed. Host address records are kept: one host often serves
+// several services (an Apple TV announces both _airplay and _hap), so denying
+// one service must not hide the others.
+func StripDenied(m *dns.Msg, r Rule) (*dns.Msg, bool) {
+	if r.denyAll || len(r.deny) == 0 {
+		return m, false
+	}
+	denied := func(name string) bool {
+		st := ServiceType(name)
+		return st != "" && r.deny[st]
+	}
+	hit := false
+	for _, n := range Names(m) {
+		if denied(n) {
+			hit = true
+			break
+		}
+	}
+	if !hit {
+		return m, false
+	}
+	c := m.Copy()
+	qs := c.Question[:0]
+	for _, q := range c.Question {
+		if !denied(q.Name) {
+			qs = append(qs, q)
+		}
+	}
+	c.Question = qs
+	keep := func(rrs []dns.RR) []dns.RR {
+		out := rrs[:0]
+		for _, rr := range rrs {
+			if denied(rr.Header().Name) {
+				continue
+			}
+			if p, ok := rr.(*dns.PTR); ok && denied(p.Ptr) {
+				continue
+			}
+			out = append(out, rr)
+		}
+		return out
+	}
+	c.Answer, c.Ns, c.Extra = keep(c.Answer), keep(c.Ns), keep(c.Extra)
+	return c, true
+}
+
 // ClearQU clears the unicast-response bit of every question. It reports
 // whether anything changed.
 func ClearQU(m *dns.Msg) bool {

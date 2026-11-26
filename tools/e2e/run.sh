@@ -19,6 +19,18 @@ if ! ip netns list | grep -q "^$NS"; then
   ip netns exec "$NS" ip route add default via 10.99.0.1
 fi
 
+# Second namespace = the "main VLAN" with phones, for real-multicast mDNS reflector tests.
+if ! ip netns list | grep -q "^simmain"; then
+  ip netns add simmain
+  ip link add lan1 type veth peer name simeth1
+  ip link set simeth1 netns simmain
+  ip addr add 10.88.0.1/24 dev lan1; ip link set lan1 up multicast on
+  ip netns exec simmain ip link set lo up
+  ip netns exec simmain ip link set simeth1 up multicast on
+  ip netns exec simmain ip addr add 10.88.0.50/24 dev simeth1
+  ip netns exec simmain ip route add default via 10.88.0.1
+fi
+
 pkill -f tools/sim/sim.py 2>/dev/null || true
 : > "$ROOT/tools/sim/sim.log"
 ip netns exec "$NS" python3 "$ROOT/tools/sim/sim.py" --samsung 10.99.0.20 --sonos 10.99.0.30,10.99.0.31 --android 10.99.0.10,10.99.0.11 &

@@ -327,3 +327,46 @@ func TestParseConfigDefaults(t *testing.T) {
 		t.Fatal("rule without from accepted")
 	}
 }
+
+func TestDenyStripsRecordsNotPacket(t *testing.T) {
+	r, _ := testReflector(t, `{"enabled":true,"interfaces":["vlan20","lan"],
+	  "rules":[{"from":"vlan20","to":["lan"],"allow":["*"],"deny":["_hap._tcp"]}]}`)
+	now := time.Unix(30000, 0)
+	// An Apple TV announces AirPlay and HomeKit in one packet.
+	m := new(dns.Msg)
+	m.Response, m.Authoritative = true, true
+	hdr := func(name string, t uint16) dns.RR_Header {
+		return dns.RR_Header{Name: name, Rrtype: t, Class: dns.ClassINET | 0x8000, Ttl: 120}
+	}
+	m.Answer = []dns.RR{
+		&dns.PTR{Hdr: hdr("_airplay._tcp.local.", dns.TypePTR), Ptr: "Lounge._airplay._tcp.local."},
+		&dns.PTR{Hdr: hdr("_hap._tcp.local.", dns.TypePTR), Ptr: "Lounge._hap._tcp.local."},
+		&dns.SRV{Hdr: hdr("Lounge._airplay._tcp.local.", dns.TypeSRV), Port: 7000, Target: "Lounge.local."},
+		&dns.SRV{Hdr: hdr("Lounge._hap._tcp.local.", dns.TypeSRV), Port: 49152, Target: "Lounge.local."},
+	}
+	m.Extra = []dns.RR{&dns.A{Hdr: hdr("Lounge.local.", dns.TypeA), A: net.ParseIP("10.0.20.60").To4()}}
+	b, _ := m.Pack()
+	d := r.Decide("vlan20", b, netip.MustParseAddr("10.0.20.60"), now)
+	if d.Drop != "" || len(d.To) != 1 {
+		t.Fatalf("mixed packet should be reflected: %+v", d)
+	}
+	out := new(dns.Msg)
+	if err := out.Unpack(d.PayloadFor("lan")); err != nil {
+		t.Fatal(err)
+	}
+	for _, rr := range append(out.Answer, out.Extra...) {
+		if ServiceType(rr.Header().Name) == "_hap._tcp" {
+			t.Fatalf("denied record leaked: %s", rr)
+		}
+	}
+	if len(out.Answer) != 2 || len(out.Extra) != 1 {
+		t.Fatalf("expected airplay PTR+SRV and host A to remain, got %d answers %d extra", len(out.Answer), len(out.Extra))
+	}
+	// A packet that is only the denied service is still dropped.
+	q := new(dns.Msg)
+	q.SetQuestion("_hap._tcp.local.", dns.TypePTR)
+	qb, _ := q.Pack()
+	if d := r.Decide("vlan20", qb, netip.MustParseAddr("10.0.20.61"), now); d.Drop != "nomatch" {
+		t.Fatalf("pure denied query should be dropped: %+v", d)
+	}
+}

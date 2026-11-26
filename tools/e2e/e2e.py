@@ -91,6 +91,30 @@ def live_ws(path):
         return data.decode()
     return sock, recv_msg
 
+MDNS_PY = r"""
+import socket, struct, sys, time, json
+def name(n): return b''.join(bytes([len(p)]) + p.encode() for p in n.rstrip('.').split('.')) + b'\0'
+def rr(owner, typ, rdata, ttl=120): return name(owner) + struct.pack('>HHIH', typ, 0x8001, ttl, len(rdata)) + rdata
+mode = sys.argv[1]
+if mode == 'listen':
+    ip, secs = sys.argv[2], float(sys.argv[3])
+    s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM); s.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+    s.bind(('', 5353)); s.setsockopt(socket.IPPROTO_IP, socket.IP_ADD_MEMBERSHIP, socket.inet_aton('224.0.0.251') + socket.inet_aton(ip))
+    s.settimeout(0.5); seen = []; end = time.time() + secs
+    while time.time() < end:
+        try: d, a = s.recvfrom(9000); seen.append({'from': a[0], 'hex': d.hex()})
+        except socket.timeout: pass
+    print(json.dumps(seen))
+else:
+    ip, svc, inst, host, port = sys.argv[2], sys.argv[3], sys.argv[4], sys.argv[5], int(sys.argv[6])
+    full = f'{inst}.{svc}.local'
+    ans = rr(f'{svc}.local', 12, name(full)) + rr(full, 33, struct.pack('>HHH', 0, 0, port) + name(host)) + rr(host, 1, socket.inet_aton(ip))
+    pkt = struct.pack('>HHHHHH', 0, 0x8400, 0, 3, 0, 0) + ans
+    s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM); s.setsockopt(socket.IPPROTO_IP, socket.IP_MULTICAST_IF, socket.inet_aton(ip))
+    s.setsockopt(socket.IPPROTO_IP, socket.IP_MULTICAST_TTL, 255); s.bind((ip, 5353))
+    for _ in range(3): s.sendto(pkt, ('224.0.0.251', 5353)); time.sleep(0.3)
+"""
+
 def main():
     print('== setup')
     cl = api('POST', '/api/clients', {'name': 'E2E Client'})
@@ -310,15 +334,34 @@ def main():
             check('section DNS filter completed', False, str(e)[:300])
         print('== mDNS reflector')
         try:
-            ifaces = [i['name'] for i in gwinfo.get('interfaces') or []]
-            cfg = {'enabled': True, 'interfaces': ifaces[:2], 'rules': [{'from': ifaces[0], 'to': ifaces[1:2] or [ifaces[0]], 'allow': ['_sonos._tcp'], 'deny': []}] if ifaces else [], 'ssdp': {'enabled': False, 'rules': []}, 'rate_limit_pps': 100, 'track_services': True}
+            have_main = subprocess.run(['ip', 'netns', 'exec', 'simmain', 'true']).returncode == 0
+            cfg = {'enabled': True, 'interfaces': ['lan0', 'lan1'], 'rules': [
+                {'from': 'lan0', 'to': ['lan1'], 'allow': ['_sonos._tcp', '_spotify-connect._tcp'], 'deny': []},
+                {'from': 'lan1', 'to': ['lan0'], 'allow': ['*'], 'deny': []}],
+                'ssdp': {'enabled': True, 'rules': [{'from': 'lan1', 'to': ['lan0']}]}, 'rate_limit_pps': 200, 'track_services': True}
             r = api('PUT', f'/api/sites/{sid}/mdns', cfg)
             check('mDNS config pushed to gateway', r.get('pushed') is True, json.dumps(r))
-            st = api('GET', f'/api/sites/{sid}/mdns')
-            check('mDNS status readable', st['status'] is not None, json.dumps(st)[:300])
-
+            if have_main:
+                time.sleep(1.5)
+                lst = subprocess.Popen(['ip', 'netns', 'exec', 'simmain', 'python3', '-c', MDNS_PY, 'listen', '10.88.0.50', '5'], stdout=subprocess.PIPE, text=True)
+                time.sleep(1)
+                subprocess.run(['ip', 'netns', 'exec', 'simlan', 'python3', '-c', MDNS_PY, 'announce', '10.99.0.30', '_sonos._tcp', 'Kitchen', 'sonos-kitchen.local', '1443'], timeout=10)
+                subprocess.run(['ip', 'netns', 'exec', 'simlan', 'python3', '-c', MDNS_PY, 'announce', '10.99.0.31', '_hap._tcp', 'Bridge', 'hap-bridge.local', '51826'], timeout=10)
+                got = json.loads(lst.communicate(timeout=15)[0] or '[]')
+                blob = ''.join(g['hex'] for g in got)
+                sonos_hex = bytes([7]).hex() + b'Kitchen'.hex()
+                hap_hex = bytes([6]).hex() + b'Bridge'.hex()
+                check('mDNS: Sonos announcement reflected IoT VLAN -> main VLAN (real multicast)', sonos_hex in blob and any(g['from'] == '10.88.0.1' for g in got), f'{len(got)} packets')
+                check('mDNS: non-allowed service (_hap) not reflected', hap_hex not in blob)
+                st = wait(lambda: (lambda x: x if x.get('status') and any(sv['service'] == '_sonos._tcp' for sv in x['status'].get('services', [])) else None)(api('GET', f'/api/sites/{sid}/mdns')), 10)
+                check('mDNS: service tracker lists the Sonos', bool(st), json.dumps((st or {}).get('status', {}))[:200])
+                if st: check('mDNS: reflected counter increments', st['status']['counters']['reflected'] > 0, json.dumps(st['status']['counters']))
+            else:
+                st = api('GET', f'/api/sites/{sid}/mdns')
+                check('mDNS status readable', st['status'] is not None, json.dumps(st)[:300])
         except Exception as e:
             check('section mDNS reflector completed', False, str(e)[:300])
+
         print('== automations')
         try:
             a = api('POST', '/api/automations', {'name': 'E2E: home key', 'scope_type': 'site', 'scope_id': sid, 'trigger': {'type': 'schedule', 'cron': '0 3 * * *'}, 'target': {'kinds': ['android']}, 'actions': [{'type': 'command', 'command': 'key', 'args': {'key': 'HOME'}}]})
