@@ -5,7 +5,7 @@ import {
   audit, DEFAULT_SITE_SETTINGS, getAppSettings, kioskPinHash, type Row, siteMdns, siteSettings, toAlert, toDevice, toDiscovered, toGateway, toJob,
 } from '../lib/db';
 import { hub, hubStub, originOf } from '../lib/hub';
-import { HttpError, isPrivateIPv4, now, rid, slugify } from '../lib/util';
+import { HttpError, isPrivateIPv4, now, parseJson, rid, slugify } from '../lib/util';
 import { actorOf, type AppEnv, body, fleetDnsSummary, siteSummaries } from './shared';
 
 export const siteRoutes = new Hono<AppEnv>();
@@ -23,6 +23,14 @@ siteRoutes.get('/overview', async (c) => {
     env.DB.prepare(`SELECT d.id, d.name, d.site_id, s.name site_name, d.kind, d.privacy_score FROM devices d JOIN sites s ON s.id = d.site_id WHERE d.privacy_score IS NOT NULL ORDER BY d.privacy_score ASC LIMIT 8`).all<Row>(),
   ]);
   const sites = await siteSummaries(env);
+  const worstIds = worst.results.map((r) => r.id as string);
+  const [acrRows, bypassRows] = worstIds.length ? await Promise.all([
+    env.DB.prepare(`SELECT device_id, cats FROM dns_hourly WHERE hour >= ? AND device_id IN (${worstIds.map(() => '?').join(',')})`).bind(Date.now() - 86_400_000, ...worstIds).all<Row>(),
+    env.DB.prepare("SELECT device_id FROM alerts WHERE type = 'dns.bypass' AND resolved_at IS NULL").all<Row>(),
+  ]) : [{ results: [] as Row[] }, { results: [] as Row[] }];
+  const acrBy = new Map<string, number>();
+  for (const r of acrRows.results) acrBy.set(r.device_id, (acrBy.get(r.device_id) ?? 0) + (parseJson<any>(r.cats, {}).acr ?? 0));
+  const bypassIds = new Set(bypassRows.results.map((r) => r.device_id as string));
   const byKind: Record<string, number> = {};
   let total = 0, online = 0;
   for (const r of devs.results) { byKind[r.kind] = (byKind[r.kind] ?? 0) + r.n; total += r.n; if (r.status === 'online' || r.status === 'standby') online += r.n; }
@@ -35,7 +43,7 @@ siteRoutes.get('/overview', async (c) => {
     },
     dns: await fleetDnsSummary(env, { hours: 24 }),
     sites,
-    privacy_worst: worst.results.map((r) => ({ device_id: r.id, name: r.name, site_id: r.site_id, site_name: r.site_name, kind: r.kind, score: r.privacy_score, grade: grade(r.privacy_score), bypass_suspected: false, acr_24h: 0 })),
+    privacy_worst: worst.results.map((r) => ({ device_id: r.id, name: r.name, site_id: r.site_id, site_name: r.site_name, kind: r.kind, score: r.privacy_score, grade: grade(r.privacy_score), bypass_suspected: bypassIds.has(r.id), acr_24h: acrBy.get(r.id) ?? 0 })),
     alerts: alerts.results.map(toAlert),
     recent_jobs: jobs.results.map(toJob),
   };

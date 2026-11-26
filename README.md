@@ -41,6 +41,7 @@ npm test
 # gateway
 cd gateway && go test ./... && ./build.sh
 
-# end-to-end with simulated devices (Samsung, Sonos, fake Shield adbd)
-sudo python3 tools/sim/sim.py --samsung 10.99.0.20 --sonos 10.99.0.30,10.99.0.31 --android 10.99.0.10
+# end-to-end: simulated LAN (netns) with a Samsung TV, 2 Sonos and 2 Shields (real adb wire protocol),
+# local central Worker, and the real gateway binary — ~60 checks across every feature
+sudo tools/e2e/run.sh
 ```

@@ -67,6 +67,30 @@ def dns_query(name, src_ip, server, qtype=1):
     rcode, ips = json.loads(out.stdout)
     return rcode, ips
 
+def live_ws(path):
+    """Minimal WebSocket client for the dashboard live feed (server frames are unmasked)."""
+    import base64 as _b64
+    host, port = BASE.split('//')[1].split(':')
+    sock = socket.create_connection((host, int(port)), timeout=10)
+    key = _b64.b64encode(os.urandom(16)).decode()
+    sock.sendall(f'GET {path} HTTP/1.1\r\nHost: {host}:{port}\r\nUpgrade: websocket\r\nConnection: Upgrade\r\nSec-WebSocket-Key: {key}\r\nSec-WebSocket-Version: 13\r\n\r\n'.encode())
+    head = b''
+    while b'\r\n\r\n' not in head: head += sock.recv(1)
+    if b' 101 ' not in head.split(b'\r\n')[0]: raise AssertionError(head[:200])
+    buf = b''
+    def recv_msg(timeout=10):
+        nonlocal buf
+        sock.settimeout(timeout)
+        def need(n):
+            nonlocal buf
+            while len(buf) < n: buf += sock.recv(65536)
+        need(2); b1, b2 = buf[0], buf[1]; n = b2 & 0x7f; off = 2
+        if n == 126: need(4); n = struct.unpack('>H', buf[2:4])[0]; off = 4
+        elif n == 127: need(10); n = struct.unpack('>Q', buf[2:10])[0]; off = 10
+        need(off + n); data = buf[off:off + n]; buf = buf[off + n:]
+        return data.decode()
+    return sock, recv_msg
+
 def main():
     print('== setup')
     cl = api('POST', '/api/clients', {'name': 'E2E Client'})
@@ -251,6 +275,19 @@ def main():
                 check('ACR categorised', any(e['cat'] == 'acr' for e in log_))
                 summ = api('GET', f'/api/sites/{sid}/dns/summary?hours=24')
                 check('site DNS summary', summ['queries'] > 0 and summ['blocked'] > 0 and summ['by_category'].get('acr', 0) > 0, json.dumps({k: summ[k] for k in ('queries', 'blocked', 'would_block', 'by_category')}))
+                sock, recv = live_ws(f'/api/sites/{sid}/live')
+                time.sleep(0.5)
+                dns_query('telemetry-check.samsungacr.com', '10.99.0.20', server)
+                got = None
+                t_end = time.time() + 15
+                while time.time() < t_end and not got:
+                    try:
+                        ev = json.loads(recv(max(0.5, t_end - time.time())))
+                        if ev.get('type') == 'dns' and any(e['qname'] == 'telemetry-check.samsungacr.com' for e in ev['entries']): got = ev
+                    except socket.timeout:
+                        break
+                sock.close()
+                check('live dashboard feed streams DNS queries', got is not None and any(e.get('device_name') == 'Lounge TV' for e in got['entries']), json.dumps(got)[:200] if got else 'no event')
                 priv = api('GET', f'/api/devices/{tv}/privacy')
                 check('privacy score computed', 0 <= priv['score'] <= 100 and priv['checklist'], f"score={priv['score']} grade={priv['grade']}")
 
@@ -290,6 +327,21 @@ def main():
 
         except Exception as e:
             check('section overview + audit completed', False, str(e)[:300])
+        print('== gateway self-update')
+        try:
+            rel = subprocess.run([os.path.join(ROOT, 'tools', 'release-gateway.sh'), '0.0.99-e2e', '--local'], capture_output=True, text=True, timeout=300)
+            check('release published to local R2/D1', rel.returncode == 0, (rel.stdout + rel.stderr)[-300:])
+            api('POST', f'/api/sites/{sid}/gateway/update', timeout=300)
+            try: gw.wait(30); exited = gw.returncode
+            except subprocess.TimeoutExpired: exited = None
+            newbin = os.path.join(data, 'bin', 'screens-gateway')
+            check('gateway downloaded + verified update and exited for restart', exited == 0 and os.path.exists(newbin), f'exit={exited} bin={os.path.exists(newbin)}')
+            gw = subprocess.Popen([newbin], env=env, stdout=log, stderr=subprocess.STDOUT)
+            ok = wait(lambda: api('GET', f'/api/sites/{sid}/gateway').get('version') == '0.0.99-e2e' and api('GET', f'/api/sites/{sid}')['gateway_status'] == 'online', 40)
+            check('gateway back online on the new version (same identity)', ok)
+        except Exception as e:
+            check('section gateway self-update completed', False, str(e)[:300])
+
         print('== revoke')
         try:
             api('POST', f'/api/sites/{sid}/gateway/revoke')
