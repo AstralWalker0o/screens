@@ -13,6 +13,7 @@ import au.supercluster.screens.launcher.data.ConfigStore
 import au.supercluster.screens.launcher.data.Diagnostics
 import au.supercluster.screens.launcher.data.HomeStatus
 import java.io.IOException
+import java.util.concurrent.Executors
 
 /**
  * Receives config and status queries from the Screens gateway over adb.
@@ -24,10 +25,19 @@ import java.io.IOException
 class ConfigReceiver : BroadcastReceiver() {
 
     override fun onReceive(context: Context, intent: Intent) {
-        val (code, data) = handle(context, intent)
-        if (isOrderedBroadcast) {
-            resultCode = code
-            resultData = data
+        // Off the main thread (which draws the home screen): CONFIG writes to disk and STATUS may
+        // wait briefly for an asset upload to finish verifying. `am broadcast` still gets the
+        // result, because the broadcast only completes when the pending result is finished.
+        val ordered = isOrderedBroadcast
+        val pending = goAsync()
+        val app = context.applicationContext
+        worker.execute {
+            try {
+                val (code, data) = handle(app, intent)
+                if (ordered) pending.setResult(code, data, null)
+            } finally {
+                pending.finish()
+            }
         }
     }
 
@@ -106,5 +116,8 @@ class ConfigReceiver : BroadcastReceiver() {
         const val RESULT_ERROR = 0
         private const val TAG = "ScreensConfig"
         private const val STATUS_WAIT_MILLIS = 3_000L
+
+        /** One at a time, in arrival order: a CONFIG and the STATUS after it never overlap. */
+        private val worker = Executors.newSingleThreadExecutor { r -> Thread(r, "screens-config").apply { isDaemon = true } }
     }
 }
